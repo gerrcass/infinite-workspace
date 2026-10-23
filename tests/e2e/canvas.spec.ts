@@ -7,6 +7,7 @@ import {
   currentZoom,
   expectBoardReady,
   findEmptyPoint,
+  runBoardManipulationJourney,
   runEditableCardsJourney,
   viewportHasNoScrollbars,
   watchConsole,
@@ -111,6 +112,66 @@ test('paints live cards into canvas and hit-tests them at camera coordinates', a
 test('edits live card text and checklists through canvas hit-testing', async ({ page }) => {
   const consoleProblems = watchConsole(page);
   await runEditableCardsJourney(page, 'Canvas', consoleProblems);
+});
+
+test('adds, drags, duplicates, undoes, persists, and resets in canvas', async ({ page }) => {
+  const consoleProblems = watchConsole(page);
+  await runBoardManipulationJourney(page, 'Canvas', consoleProblems);
+});
+
+test('keeps edits and checkbox state when canvas fails over to DOM', async ({ page }) => {
+  await page.addInitScript(() => {
+    interface DrawableContext extends CanvasRenderingContext2D {
+      drawElementImage(
+        element: Element,
+        dx: number,
+        dy: number,
+        width?: number,
+        height?: number,
+      ): void;
+    }
+    const testWindow = window as Window & { __failDraw?: boolean };
+    testWindow.__failDraw = false;
+    const prototype = CanvasRenderingContext2D.prototype as DrawableContext;
+    const original = prototype.drawElementImage;
+    Object.defineProperty(prototype, 'drawElementImage', {
+      configurable: true,
+      writable: true,
+      value(this: DrawableContext, ...args: Parameters<typeof original>) {
+        if (testWindow.__failDraw) {
+          throw new Error('simulated canvas drawing failure');
+        }
+        original.apply(this, args);
+      },
+    });
+  });
+
+  const consoleProblems = watchConsole(page);
+  await page.goto('/?render=canvas');
+  await expectBoardReady(page, 'Canvas');
+
+  const welcome = card(page, 'card-000');
+  const title = welcome.locator('.card__title');
+  await title.click();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('Survives the switch');
+  await page.keyboard.press('Enter');
+
+  const checkbox = welcome.locator('input[type="checkbox"]').first();
+  const checkedBefore = await checkbox.isChecked();
+  await checkbox.click();
+  expect(await checkbox.isChecked()).toBe(!checkedBefore);
+
+  await page.evaluate(() => {
+    (window as Window & { __failDraw?: boolean }).__failDraw = true;
+  });
+  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await expectBoardReady(page, 'DOM');
+  await expect(card(page, 'card-000').locator('.card__title')).toHaveText('Survives the switch');
+  await expect(card(page, 'card-000').locator('input[type="checkbox"]').first()).toBeChecked({
+    checked: !checkedBefore,
+  });
+  expect(consoleProblems.messages).toEqual([]);
 });
 
 test('honours an explicit DOM request even when canvas is available', async ({ page }) => {

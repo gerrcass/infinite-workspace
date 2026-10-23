@@ -1,20 +1,50 @@
 import type { Camera } from '../camera/camera';
 import { clampZoom, isFiniteCamera } from '../camera/camera';
-import type { Board, Card, ChecklistItem } from './types';
+import type { Board, Card, CardColor, ChecklistItem } from './types';
+
+export interface HistoryState {
+  readonly canUndo: boolean;
+  readonly canRedo: boolean;
+}
 
 export type StoreEvent =
   | { readonly type: 'camera'; readonly camera: Camera }
   | { readonly type: 'cards'; readonly cards: readonly Card[] }
   | { readonly type: 'card'; readonly card: Card }
-  | { readonly type: 'selection'; readonly selectedId: string | null };
+  | { readonly type: 'selection'; readonly selectedId: string | null }
+  | { readonly type: 'history'; readonly state: HistoryState };
 
 export type StoreListener = (event: StoreEvent) => void;
+
+export interface StoreOptions {
+  readonly historyLimit?: number;
+  readonly createId?: () => string;
+}
+
+export interface StoreSnapshot {
+  readonly cards: readonly Card[];
+  readonly selectedId: string | null;
+  readonly camera: Camera;
+  readonly zCounter: number;
+}
+
+interface BoardSnapshot {
+  readonly cards: readonly Card[];
+  readonly selectedId: string | null;
+  readonly zCounter: number;
+}
+
+const DEFAULT_HISTORY_LIMIT = 50;
 
 function randomToken(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function defaultCardId(): string {
+  return `note-${randomToken()}`;
 }
 
 function createChecklistItemId(cardId: string, checklist: readonly ChecklistItem[]): string {
@@ -26,17 +56,14 @@ function createChecklistItemId(cardId: string, checklist: readonly ChecklistItem
   return id;
 }
 
-export interface StoreSnapshot {
-  readonly cards: readonly Card[];
-  readonly selectedId: string | null;
-  readonly camera: Camera;
-  readonly zCounter: number;
-}
-
 /**
- * The single source of truth for board data, selection, and camera. It has no
- * DOM knowledge. Mutations notify targeted subscribers so the app can update
- * the affected card without rebuilding the wall.
+ * The single source of truth for board data, selection, camera, and history.
+ * It has no DOM knowledge. Mutations notify targeted subscribers so the app can
+ * update the affected card without rebuilding the wall.
+ *
+ * History is snapshot based. Structural actions push one entry; text edits
+ * coalesce between `beginTextSession()` and `endTextSession()` so a whole field
+ * session undoes at once. Native text undo remains the browser's job.
  */
 export class BoardStore {
   private cards: Card[];
@@ -44,12 +71,20 @@ export class BoardStore {
   private camera: Camera;
   private zCounter: number;
   private readonly listeners = new Set<StoreListener>();
+  private undoStack: BoardSnapshot[] = [];
+  private redoStack: BoardSnapshot[] = [];
+  private textBaseline: BoardSnapshot | null = null;
+  private moveBaseline: BoardSnapshot | null = null;
+  private readonly historyLimit: number;
+  private readonly createId: () => string;
 
-  constructor(board: Board, camera: Camera) {
+  constructor(board: Board, camera: Camera, options: StoreOptions = {}) {
     this.cards = [...board.cards];
     this.selectedId = board.selectedId;
     this.camera = camera;
     this.zCounter = board.zCounter;
+    this.historyLimit = Math.max(1, options.historyLimit ?? DEFAULT_HISTORY_LIMIT);
+    this.createId = options.createId ?? defaultCardId;
   }
 
   getSnapshot(): StoreSnapshot {
@@ -75,6 +110,13 @@ export class BoardStore {
 
   getSelectedId(): string | null {
     return this.selectedId;
+  }
+
+  getHistoryState(): HistoryState {
+    return {
+      canUndo: this.undoStack.length > 0,
+      canRedo: this.redoStack.length > 0,
+    };
   }
 
   subscribe(listener: StoreListener): () => void {
@@ -115,9 +157,67 @@ export class BoardStore {
       throw new Error(`Card ${card.id} already exists`);
     }
 
-    this.cards = [...this.cards, card];
-    this.zCounter = Math.max(this.zCounter, card.z);
-    this.emit({ type: 'cards', cards: this.cards });
+    this.structural(() => {
+      this.cards = [...this.cards, card];
+      this.zCounter = Math.max(this.zCounter, card.z);
+      this.emit({ type: 'cards', cards: this.cards });
+    });
+  }
+
+  duplicateCard(id: string): Card | null {
+    const original = this.getCard(id);
+    if (!original) {
+      return null;
+    }
+
+    const newId = this.createId();
+    if (this.cards.some((card) => card.id === newId)) {
+      return null;
+    }
+
+    const copy: Card = {
+      ...original,
+      id: newId,
+      x: original.x + 28,
+      y: original.y + 28,
+      z: this.zCounter + 1,
+      checklist: original.checklist.map((item, index) => ({
+        ...item,
+        id: `${newId}-check-${index}`,
+      })),
+    };
+
+    this.structural(() => {
+      this.cards = [...this.cards, copy];
+      this.zCounter = copy.z;
+      this.selectedId = copy.id;
+      this.emit({ type: 'cards', cards: this.cards });
+      this.emit({ type: 'selection', selectedId: copy.id });
+    });
+    return copy;
+  }
+
+  removeCard(id: string): void {
+    if (!this.cards.some((card) => card.id === id)) {
+      return;
+    }
+
+    this.structural(() => {
+      this.cards = this.cards.filter((card) => card.id !== id);
+      if (this.selectedId === id) {
+        this.selectedId = null;
+        this.emit({ type: 'selection', selectedId: null });
+      }
+      this.emit({ type: 'cards', cards: this.cards });
+    });
+  }
+
+  setCardColor(id: string, color: CardColor): Card | null {
+    const current = this.getCard(id);
+    if (!current || current.color === color) {
+      return current ?? null;
+    }
+    return this.structuralUpdate(id, { color });
   }
 
   updateCardText(id: string, field: 'title' | 'body', text: string): Card | null {
@@ -152,9 +252,11 @@ export class BoardStore {
     if (item.done === nextDone) {
       return current;
     }
-    return this.updateChecklist(cardId, (checklist) =>
-      checklist.map((entry) => (entry.id === itemId ? { ...entry, done: nextDone } : entry)),
-    );
+    return this.structuralUpdate(cardId, {
+      checklist: current.checklist.map((entry) =>
+        entry.id === itemId ? { ...entry, done: nextDone } : entry,
+      ),
+    });
   }
 
   addChecklistItem(cardId: string, text = ''): ChecklistItem | null {
@@ -167,7 +269,9 @@ export class BoardStore {
       text,
       done: false,
     };
-    const next = this.updateChecklist(cardId, (checklist) => [...checklist, item]);
+    const next = this.structuralUpdate(cardId, {
+      checklist: [...current.checklist, item],
+    });
     return next ? item : null;
   }
 
@@ -176,9 +280,129 @@ export class BoardStore {
     if (!current || !current.checklist.some((entry) => entry.id === itemId)) {
       return current ?? null;
     }
-    return this.updateChecklist(cardId, (checklist) =>
-      checklist.filter((entry) => entry.id !== itemId),
-    );
+    return this.structuralUpdate(cardId, {
+      checklist: current.checklist.filter((entry) => entry.id !== itemId),
+    });
+  }
+
+  /** Capture the pre-edit board once. Repeated calls in a session are no-ops. */
+  beginTextSession(): void {
+    if (this.textBaseline || this.moveBaseline) {
+      return;
+    }
+    this.textBaseline = this.snapshot();
+  }
+
+  /**
+   * Close a text session. If the field actually changed, the whole session
+   * becomes one history entry; empty sessions disappear.
+   */
+  endTextSession(): void {
+    const baseline = this.textBaseline;
+    if (!baseline) {
+      return;
+    }
+    this.textBaseline = null;
+    if (this.hasBoardChanged(baseline)) {
+      this.pushUndo(baseline);
+    }
+  }
+
+  /** Start a pointer drag: select, raise, and remember the pre-drag board. */
+  beginMoveSession(id: string): Card | null {
+    this.endTextSession();
+    if (this.moveBaseline) {
+      this.endMoveSession(true);
+    }
+    const card = this.getCard(id);
+    if (!card) {
+      return null;
+    }
+
+    this.moveBaseline = this.snapshot();
+    this.select(id);
+    this.bringToFront(id);
+    return this.getCard(id) ?? card;
+  }
+
+  moveCard(id: string, x: number, y: number): Card | null {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    const current = this.getCard(id);
+    if (!current || (current.x === x && current.y === y)) {
+      return current ?? null;
+    }
+    return this.updateCard(id, { x, y });
+  }
+
+  /** Close a drag. A real move becomes one history entry; a click does not. */
+  endMoveSession(moved: boolean): void {
+    const baseline = this.moveBaseline;
+    if (!baseline) {
+      return;
+    }
+    this.moveBaseline = null;
+    if (moved && this.hasBoardChanged(baseline)) {
+      this.pushUndo(baseline);
+    }
+  }
+
+  undo(): boolean {
+    if (this.textBaseline || this.moveBaseline) {
+      return false;
+    }
+    const previous = this.undoStack.pop();
+    if (!previous) {
+      return false;
+    }
+    this.redoStack.push(this.snapshot());
+    this.trimHistory();
+    this.restore(previous);
+    return true;
+  }
+
+  redo(): boolean {
+    if (this.textBaseline || this.moveBaseline) {
+      return false;
+    }
+    const next = this.redoStack.pop();
+    if (!next) {
+      return false;
+    }
+    this.undoStack.push(this.snapshot());
+    this.trimHistory();
+    this.restore(next);
+    return true;
+  }
+
+  /**
+   * Replace the board wholesale (reset demo, clear saved data). History is not
+   * carried across a reset.
+   */
+  resetBoard(board: Board, camera: Camera): void {
+    this.textBaseline = null;
+    this.moveBaseline = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.cards = [...board.cards];
+    this.zCounter = Math.max(board.zCounter, ...board.cards.map((card) => card.z), 0);
+    this.selectedId =
+      board.selectedId && board.cards.some((card) => card.id === board.selectedId)
+        ? board.selectedId
+        : null;
+
+    const nextCamera = isFiniteCamera(camera)
+      ? { ...camera, zoom: clampZoom(camera.zoom) }
+      : camera;
+    const cameraChanged = !this.cameraEquals(nextCamera);
+    if (cameraChanged) {
+      this.camera = nextCamera;
+      this.emit({ type: 'camera', camera: nextCamera });
+    }
+    this.emit({ type: 'cards', cards: this.cards });
+    this.emit({ type: 'selection', selectedId: this.selectedId });
+    this.emitHistory();
   }
 
   updateCard(id: string, patch: Partial<Omit<Card, 'id'>>): Card | null {
@@ -197,18 +421,12 @@ export class BoardStore {
     return next;
   }
 
-  removeCard(id: string): void {
-    const index = this.cards.findIndex((card) => card.id === id);
-    if (index < 0) {
-      return;
-    }
-
-    this.cards = [...this.cards.slice(0, index), ...this.cards.slice(index + 1)];
-    if (this.selectedId === id) {
-      this.selectedId = null;
-      this.emit({ type: 'selection', selectedId: null });
-    }
-    this.emit({ type: 'cards', cards: this.cards });
+  private structuralUpdate(id: string, patch: Partial<Omit<Card, 'id'>>): Card | null {
+    let updated: Card | null = null;
+    this.structural(() => {
+      updated = this.updateCard(id, patch);
+    });
+    return updated;
   }
 
   private updateChecklist(
@@ -220,6 +438,76 @@ export class BoardStore {
       return null;
     }
     return this.updateCard(cardId, { checklist: transform(current.checklist) });
+  }
+
+  private structural(mutate: () => void): void {
+    this.endTextSession();
+    const before = this.snapshot();
+    mutate();
+    if (this.hasBoardChanged(before)) {
+      this.pushUndo(before);
+    }
+  }
+
+  private bringToFront(id: string): void {
+    const card = this.getCard(id);
+    if (!card || card.z === this.zCounter) {
+      return;
+    }
+    this.updateCard(id, { z: this.zCounter + 1 });
+  }
+
+  private snapshot(): BoardSnapshot {
+    return {
+      cards: this.cards,
+      selectedId: this.selectedId,
+      zCounter: this.zCounter,
+    };
+  }
+
+  private hasBoardChanged(before: BoardSnapshot): boolean {
+    return this.cards !== before.cards || this.zCounter !== before.zCounter;
+  }
+
+  private pushUndo(baseline: BoardSnapshot): void {
+    this.undoStack.push(baseline);
+    this.trimHistory();
+    this.redoStack = [];
+    this.emitHistory();
+  }
+
+  private trimHistory(): void {
+    while (this.undoStack.length > this.historyLimit) {
+      this.undoStack.shift();
+    }
+    while (this.redoStack.length > this.historyLimit) {
+      this.redoStack.shift();
+    }
+  }
+
+  private restore(snapshot: BoardSnapshot): void {
+    const previousSelection = this.selectedId;
+    this.cards = [...snapshot.cards];
+    this.zCounter = Math.max(snapshot.zCounter, ...snapshot.cards.map((card) => card.z), 0);
+    this.selectedId =
+      snapshot.selectedId && snapshot.cards.some((card) => card.id === snapshot.selectedId)
+        ? snapshot.selectedId
+        : null;
+    this.emit({ type: 'cards', cards: this.cards });
+    if (previousSelection !== this.selectedId) {
+      this.emit({ type: 'selection', selectedId: this.selectedId });
+    }
+    this.emitHistory();
+  }
+
+  private cameraEquals(camera: Camera): boolean {
+    return (
+      camera.x === this.camera.x && camera.y === this.camera.y && camera.zoom === this.camera.zoom
+    );
+  }
+
+  private emitHistory(): void {
+    this.emit({ type: 'history', state: this.getHistoryState() });
   }
 
   private emit(event: StoreEvent): void {

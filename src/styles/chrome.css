@@ -219,6 +219,14 @@
   background: var(--ok);
 }
 
+.status__save[data-state='saving'] .status__dot {
+  background: var(--warn);
+}
+
+.status__save[data-state='session'] .status__dot {
+  background: var(--ink-muted);
+}
+
 .status__save[data-state='error'] .status__dot {
   background: var(--danger);
 }
@@ -288,6 +296,114 @@
   width: 1px;
   height: 18px;
   background: var(--ink-faint);
+}
+
+.selection-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 16px);
+  padding: 6px 7px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--chrome-bg);
+  box-shadow: 3px 3px 0 var(--ink);
+  backdrop-filter: blur(10px);
+}
+
+.selection-toolbar[hidden] {
+  display: none;
+}
+
+.selection-toolbar__colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.selection-toolbar__swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1.5px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+}
+
+.selection-toolbar__swatch[data-color='cream'] {
+  background: var(--card-cream);
+}
+
+.selection-toolbar__swatch[data-color='butter'] {
+  background: var(--card-butter);
+}
+
+.selection-toolbar__swatch[data-color='rose'] {
+  background: var(--card-rose);
+}
+
+.selection-toolbar__swatch[data-color='mint'] {
+  background: var(--card-mint);
+}
+
+.selection-toolbar__swatch[data-color='sky'] {
+  background: var(--card-sky);
+}
+
+.selection-toolbar__swatch[data-color='lilac'] {
+  background: var(--card-lilac);
+}
+
+.selection-toolbar__swatch[data-color='peach'] {
+  background: var(--card-peach);
+}
+
+.selection-toolbar__swatch:hover {
+  transform: translateY(-1px);
+}
+
+.selection-toolbar__swatch[aria-pressed='true'] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  transform: scale(1.08);
+}
+
+.selection-toolbar__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--ink-faint);
+}
+
+.selection-toolbar__action {
+  height: 26px;
+  padding: 0 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 7px;
+  background: var(--paper-raised);
+  box-shadow: 1px 1px 0 var(--ink);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.selection-toolbar__action:hover {
+  background: var(--card-butter);
+}
+
+.selection-toolbar__action--danger {
+  color: var(--danger);
+}
+
+.selection-toolbar__action--danger:hover {
+  background: var(--accent-soft);
 }
 
 .toast {
@@ -419,6 +535,61 @@
   color: var(--ink-soft);
 }
 
+.help__data {
+  display: grid;
+  gap: 10px;
+}
+
+.help__data-actions,
+.help__confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.help__data-actions[hidden],
+.help__confirm[hidden] {
+  display: none;
+}
+
+.help__secondary,
+.help__danger {
+  padding: 7px 11px;
+  border: 1.5px solid var(--ink);
+  border-radius: 8px;
+  background: var(--paper-raised);
+  box-shadow: 1px 1px 0 var(--ink);
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.help__secondary:hover {
+  background: var(--paper-deep);
+}
+
+.help__danger {
+  background: var(--accent);
+  color: var(--paper-raised);
+}
+
+.help__danger:hover {
+  background: var(--accent-deep);
+}
+
+.help__confirm {
+  padding: 11px 12px;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.help__confirm-copy {
+  margin: 0 0 9px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .help__actions {
   display: flex;
   justify-content: flex-end;
@@ -498,11 +669,6 @@
     padding: 6px 9px;
   }
 
-  .status__save,
-  .status__divider:last-of-type {
-    display: none;
-  }
-
   .zoom__button {
     width: 30px;
     height: 32px;
@@ -518,6 +684,25 @@
     height: 32px;
     padding: 0 7px;
     font-size: 8.5px;
+  }
+
+  .selection-toolbar {
+    gap: 5px;
+    padding: 5px;
+  }
+
+  .selection-toolbar__colors {
+    gap: 3px;
+  }
+
+  .selection-toolbar__swatch {
+    width: 17px;
+    height: 17px;
+  }
+
+  .selection-toolbar__action {
+    padding: 0 6px;
+    font-size: 8px;
   }
 
   .toast {
@@ -541,6 +726,12 @@
   }
 
   .status__divider {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .status__count {
     display: none;
   }
 }

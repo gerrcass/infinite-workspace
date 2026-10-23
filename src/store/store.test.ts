@@ -85,7 +85,7 @@ describe('board store', () => {
 
     store.addCard(card);
     expect(store.getCards()).toHaveLength(217);
-    expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'cards' }));
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: 'cards' }));
 
     const updated = store.updateCard(card.id, { title: 'A real thought' });
     expect(updated?.title).toBe('A real thought');
@@ -171,6 +171,252 @@ describe('board store', () => {
     expect(store.toggleChecklistItem('missing', 'nope')).toBeNull();
     expect(store.updateChecklistItemText('missing', 'nope', 'x')).toBeNull();
     expect(store.removeChecklistItem('missing', 'nope')).toBeNull();
+  });
+
+  it('undoes and redoes add with a full card sync and selection restore', () => {
+    const store = makeStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+    const card: Card = {
+      id: 'note-history',
+      x: 10,
+      y: 20,
+      width: 'regular',
+      color: 'butter',
+      tag: 'NOTE',
+      title: 'History note',
+      body: '',
+      checklist: [],
+      z: 300,
+    };
+
+    store.addCard(card);
+    store.select(card.id);
+    expect(store.getHistoryState()).toEqual({ canUndo: true, canRedo: false });
+
+    expect(store.undo()).toBe(true);
+    expect(store.getCards()).toHaveLength(216);
+    expect(store.getSelectedId()).toBeNull();
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: 'cards' }));
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: true });
+
+    expect(store.redo()).toBe(true);
+    expect(store.getCard(card.id)?.title).toBe('History note');
+    expect(store.getSelectedId()).toBe(card.id);
+  });
+
+  it('coalesces a text session into one undo entry and discards empty sessions', () => {
+    const store = makeStore();
+    const card = store.getCards()[1];
+    if (!card) {
+      return;
+    }
+    const original = card.title;
+
+    store.beginTextSession();
+    store.updateCardText(card.id, 'title', 'H');
+    store.updateCardText(card.id, 'title', 'Hello');
+    store.updateCardText(card.id, 'title', 'Hello wall');
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: false });
+    expect(store.undo()).toBe(false);
+    store.endTextSession();
+    expect(store.getHistoryState()).toEqual({ canUndo: true, canRedo: false });
+
+    expect(store.undo()).toBe(true);
+    expect(store.getCard(card.id)?.title).toBe(original);
+    expect(store.redo()).toBe(true);
+    expect(store.getCard(card.id)?.title).toBe('Hello wall');
+
+    const stateBeforeEmptySession = store.getHistoryState();
+    store.beginTextSession();
+    store.endTextSession();
+    expect(store.getHistoryState()).toEqual(stateBeforeEmptySession);
+  });
+
+  it('ends a text session before a structural action and keeps both entries', () => {
+    const store = makeStore();
+    const card = store.getCards().find((entry) => entry.checklist.length > 0);
+    const item = card?.checklist[0];
+    if (!card || !item) {
+      return;
+    }
+    const originalTitle = card.title;
+
+    store.beginTextSession();
+    store.updateCardText(card.id, 'title', 'Text before checkbox');
+    store.toggleChecklistItem(card.id, item.id);
+    expect(store.getHistoryState()).toEqual({ canUndo: true, canRedo: false });
+
+    expect(store.undo()).toBe(true);
+    expect(store.getCard(card.id)?.checklist[0]?.done).toBe(item.done);
+    expect(store.getCard(card.id)?.title).toBe('Text before checkbox');
+
+    expect(store.undo()).toBe(true);
+    expect(store.getCard(card.id)?.title).toBe(originalTitle);
+  });
+
+  it('coalesces one drag into one entry and restores position, z, and selection', () => {
+    const store = makeStore();
+    const card = store.getCards()[1];
+    if (!card) {
+      return;
+    }
+    const original = { x: card.x, y: card.y, z: card.z };
+
+    const started = store.beginMoveSession(card.id);
+    expect(started?.id).toBe(card.id);
+    const topZ = Math.max(...store.getCards().map((entry) => entry.z));
+    expect(store.getCard(card.id)?.z).toBe(topZ);
+    expect(store.getSelectedId()).toBe(card.id);
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: false });
+    store.moveCard(card.id, card.x + 40, card.y + 30);
+    store.moveCard(card.id, card.x + 90, card.y + 70);
+    store.endMoveSession(true);
+    expect(store.getHistoryState()).toEqual({ canUndo: true, canRedo: false });
+
+    expect(store.undo()).toBe(true);
+    expect(store.getCard(card.id)).toMatchObject(original);
+    expect(store.getSelectedId()).toBeNull();
+
+    expect(store.redo()).toBe(true);
+    expect(store.getCard(card.id)).toMatchObject({
+      x: original.x + 90,
+      y: original.y + 70,
+    });
+    expect(store.getSelectedId()).toBe(card.id);
+  });
+
+  it('does not record a drag that never crossed the threshold', () => {
+    const store = makeStore();
+    const card = store.getCards()[1];
+    if (!card) {
+      return;
+    }
+    store.beginMoveSession(card.id);
+    store.endMoveSession(false);
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: false });
+  });
+
+  it('duplicates with an offset, new ids, top z, and selection', () => {
+    const store = makeStore();
+    const original = store.getCards().find((card) => card.checklist.length > 0);
+    if (!original) {
+      return;
+    }
+    store.select(original.id);
+    const copy = store.duplicateCard(original.id);
+    expect(copy).not.toBeNull();
+    if (!copy) {
+      return;
+    }
+
+    expect(copy.id).not.toBe(original.id);
+    expect(copy.x).toBe(original.x + 28);
+    expect(copy.y).toBe(original.y + 28);
+    expect(copy.z).toBeGreaterThan(Math.max(...store.getCards().map((card) => card.z)) - 1);
+    expect(copy.checklist.map((item) => item.id)).not.toEqual(
+      original.checklist.map((item) => item.id),
+    );
+    expect(store.getSelectedId()).toBe(copy.id);
+
+    expect(store.undo()).toBe(true);
+    expect(store.getCard(copy.id)).toBeUndefined();
+    expect(store.getSelectedId()).toBe(original.id);
+  });
+
+  it('undoes colour, checklist, and delete actions', () => {
+    const store = makeStore();
+    const card = store.getCards().find((entry) => entry.checklist.length > 0);
+    if (!card) {
+      return;
+    }
+    const originalColor = card.color;
+    const originalItem = card.checklist[0];
+    if (!originalItem) {
+      return;
+    }
+
+    store.setCardColor(card.id, 'sky');
+    expect(store.getCard(card.id)?.color).toBe('sky');
+    store.undo();
+    expect(store.getCard(card.id)?.color).toBe(originalColor);
+
+    store.toggleChecklistItem(card.id, originalItem.id);
+    store.undo();
+    expect(store.getCard(card.id)?.checklist[0]?.done).toBe(originalItem.done);
+
+    store.select(card.id);
+    store.removeCard(card.id);
+    expect(store.getCard(card.id)).toBeUndefined();
+    store.undo();
+    expect(store.getCard(card.id)?.id).toBe(card.id);
+    expect(store.getSelectedId()).toBe(card.id);
+  });
+
+  it('caps undo depth and drops the oldest entries', () => {
+    const store = new BoardStore({ cards: [], selectedId: null, zCounter: 0 }, camera, {
+      historyLimit: 50,
+    });
+    for (let index = 0; index < 60; index += 1) {
+      store.addCard({
+        id: `depth-${index}`,
+        x: index * 10,
+        y: 0,
+        width: 'narrow',
+        color: 'cream',
+        tag: 'NOTE',
+        title: `Card ${index}`,
+        body: '',
+        checklist: [],
+        z: index + 1,
+      });
+    }
+
+    let undone = 0;
+    while (store.undo()) {
+      undone += 1;
+    }
+    expect(undone).toBe(50);
+    expect(store.getCards()).toHaveLength(10);
+  });
+
+  it('clears redo on the next action and ignores selection/camera changes', () => {
+    const store = makeStore();
+    const card = store.getCards()[1];
+    if (!card) {
+      return;
+    }
+    store.setCamera({ x: 1, y: 2, zoom: 1 });
+    store.select(card.id);
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: false });
+
+    store.beginTextSession();
+    store.updateCardText(card.id, 'title', 'Changed');
+    store.endTextSession();
+    store.undo();
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: true });
+    store.setCamera({ x: 5, y: 6, zoom: 1 });
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: true });
+    store.setCardColor(card.id, 'mint');
+    expect(store.getHistoryState()).toEqual({ canUndo: true, canRedo: false });
+  });
+
+  it('resets the board without carrying history', () => {
+    const store = makeStore();
+    const card = store.getCards()[1];
+    if (!card) {
+      return;
+    }
+    store.beginTextSession();
+    store.updateCardText(card.id, 'title', 'Temporary');
+    store.endTextSession();
+    expect(store.getHistoryState().canUndo).toBe(true);
+
+    store.resetBoard(createSeed(), { x: -10, y: -20, zoom: 0.5 });
+    expect(store.getCards()).toHaveLength(216);
+    expect(store.getHistoryState()).toEqual({ canUndo: false, canRedo: false });
+    expect(store.getCamera()).toEqual({ x: -10, y: -20, zoom: 0.5 });
+    expect(store.getSelectedId()).toBeNull();
   });
 
   it('unsubscribes cleanly', () => {

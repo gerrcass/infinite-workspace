@@ -8,8 +8,9 @@ import {
   type ViewportSize,
 } from './camera/camera';
 import { createSeed } from './store/seed';
-import { BoardStore } from './store/store';
-import { CARD_WIDTHS, type Card } from './store/types';
+import { BoardPersistence, loadBoard, type SaveStatus } from './store/persistence';
+import { BoardStore, type StoreEvent } from './store/store';
+import { CARD_WIDTHS, type Card, type CardColor } from './store/types';
 import { CanvasRenderer, detectCanvasSupport } from './render/canvas-renderer';
 import { DomRenderer } from './render/dom-renderer';
 import { parseRenderModeParam, resolveRenderMode, type RenderMode } from './render/mode';
@@ -17,10 +18,20 @@ import type { Renderer } from './render/renderer';
 import type { CardViewHandlers } from './ui/card-view';
 import { createChrome, type Chrome } from './ui/chrome';
 import { attachInteractions } from './ui/interactions';
+import { openBrowserStorage } from './ui/storage';
 
 const MINOR_GRID_WORLD = 20;
 const MAJOR_GRID_WORLD = 100;
 const FIT_PADDING = 90;
+const MAX_CARDS = 500;
+const ADD_OFFSET = 24;
+
+const SAVE_LABELS: Record<SaveStatus, string> = {
+  saving: 'Saving',
+  saved: 'Saved',
+  session: 'Session only',
+  error: 'Not saved',
+};
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -56,9 +67,27 @@ function newCardId(): string {
   return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function isTextField(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  if (element.isContentEditable) {
+    return true;
+  }
+  if (element instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  if (element instanceof HTMLInputElement) {
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'color', 'range'].includes(
+      element.type,
+    );
+  }
+  return false;
+}
+
 /**
  * Composition root: owns the shell, store, renderer choice, camera animation,
- * and the dotted ground. Renderer internals never leak into this file.
+ * persistence, and the dotted ground. Renderer internals never leak in here.
  */
 export class App {
   private readonly board: HTMLElement;
@@ -66,13 +95,16 @@ export class App {
   private readonly scene: HTMLElement;
   private readonly store: BoardStore;
   private readonly chrome: Chrome;
+  private readonly persistence: BoardPersistence;
+  private readonly hasStorage: boolean;
+  private readonly cardHandlers: CardViewHandlers;
   private renderer: Renderer;
   private detachInteractions: (() => void) | null = null;
   private unsubscribe: (() => void) | null = null;
   private cameraFrame = 0;
+  private suppressPersistence = false;
   private destroyed = false;
   private viewport: ViewportSize;
-  private readonly cardHandlers: CardViewHandlers;
   private readonly capabilities = { canvas: detectCanvasSupport() };
   private readonly requestedMode = parseRenderModeParam(
     new URLSearchParams(window.location.search).get('render'),
@@ -89,7 +121,7 @@ export class App {
     const instructions = element('p', 'sr-only', '');
     instructions.id = 'board-instructions';
     instructions.textContent =
-      'A board of live HTML cards. Drag empty paper or scroll to pan. Hold Control or Command while scrolling to zoom. Press zero to fit the board and one for 100 percent. Press question mark for help. Use your browser’s native Find command to search real card text.';
+      'A board of live HTML cards. Click card text to edit it. Drag a card by its top strip to move it. Press N to add a note, Control or Command plus D to duplicate, Delete to remove, Control or Command plus Z to undo. Drag empty paper, hold Space, use the arrow keys, or scroll to pan. Hold Control or Command while scrolling to zoom. Press zero to fit the board and one for 100 percent. Press question mark for help. Use your browser’s native Find command to search real card text.';
 
     this.grid = element('div', 'board__grid');
     this.grid.setAttribute('aria-hidden', 'true');
@@ -101,8 +133,26 @@ export class App {
     this.root.append(this.board);
 
     this.viewport = this.measureViewport();
+    const storage = openBrowserStorage();
+    this.hasStorage = storage.port !== null;
     const seed = createSeed();
-    this.store = new BoardStore(seed, initialCamera(this.viewport));
+    const openingCamera = initialCamera(this.viewport);
+    let board = seed;
+    let camera = openingCamera;
+    let loadStatus: 'loaded' | 'empty' | 'invalid' | 'error' | 'session';
+
+    if (!storage.port) {
+      loadStatus = storage.blocked ? 'error' : 'session';
+    } else {
+      const loaded = loadBoard(storage.port);
+      loadStatus = loaded.status;
+      if (loaded.status === 'loaded') {
+        board = loaded.board;
+        camera = loaded.camera;
+      }
+    }
+
+    this.store = new BoardStore(board, camera);
     this.cardHandlers = {
       updateCardText: (cardId, field, text) => {
         this.store.updateCardText(cardId, field, text);
@@ -125,10 +175,22 @@ export class App {
       onZoomOut: () => this.zoomBy(1 / 1.2),
       onResetZoom: () => this.resetZoom(),
       onFit: () => this.fitBoard(),
+      onUndo: () => this.undo(),
+      onRedo: () => this.redo(),
+      onDuplicate: () => this.duplicateSelected(),
+      onDelete: () => this.deleteSelected(),
+      onColor: (color) => this.colorSelected(color),
+      onResetDemo: () => this.resetDemo(),
+      onClearSavedData: () => this.clearSavedData(),
     });
     // Chrome comes before the 216 card articles in DOM order so keyboard users
     // reach the toolbar before tabbing through the whole wall.
     this.board.insertBefore(this.chrome.element, this.scene);
+
+    this.persistence = new BoardPersistence({
+      storage: storage.port,
+      onStatus: (status) => this.chrome.setSaveState(SAVE_LABELS[status], status),
+    });
 
     const resolution = resolveRenderMode(this.requestedMode, this.capabilities);
     this.renderer = this.createRenderer(resolution.mode);
@@ -150,15 +212,26 @@ export class App {
     );
     this.chrome.setCardCount(snapshot.cards.length);
     this.chrome.setZoom(snapshot.camera.zoom);
-    this.chrome.setSaveState('Session only', 'session');
+    this.chrome.setHistoryState(this.store.getHistoryState());
+    this.chrome.updateSelectionToolbar(null);
     this.updateGrid(snapshot.camera);
+
+    if (loadStatus === 'loaded') {
+      this.chrome.setSaveState('Saved', 'saved');
+    } else if (loadStatus === 'error') {
+      this.chrome.setSaveState('Not saved', 'error');
+    } else if (loadStatus === 'session') {
+      this.chrome.setSaveState('Session only', 'session');
+    } else {
+      this.persistence.schedule(snapshot.cards, snapshot.zCounter, snapshot.camera);
+    }
 
     this.detachInteractions = attachInteractions(this.board, {
       getCamera: () => this.store.getCamera(),
       getViewport: () => this.viewport,
-      onCamera: (camera) => {
+      onCamera: (nextCamera) => {
         this.cancelCameraAnimation();
-        this.store.setCamera(camera);
+        this.store.setCamera(nextCamera);
       },
       onSelect: (cardId) => this.store.select(cardId),
       onAddNote: () => this.addNote(),
@@ -169,29 +242,42 @@ export class App {
       onHelp: () => this.chrome.openHelp(),
       onEditableFocus: (cardId) => {
         this.store.select(cardId);
+        this.store.beginTextSession();
         this.assistEditing(cardId);
       },
       onEditableBlur: () => {
-        // Text-session history arrives with board manipulation.
+        this.store.endTextSession();
+      },
+      onDeleteSelected: () => this.deleteSelected(),
+      onDuplicateSelected: () => this.duplicateSelected(),
+      onUndo: () => this.undo(),
+      onRedo: () => this.redo(),
+      onEscape: () => this.store.select(null),
+      onCardDragStart: (cardId) => {
+        const card = this.store.beginMoveSession(cardId);
+        return card ? { x: card.x, y: card.y } : null;
+      },
+      onCardDragMove: (cardId, x, y) => {
+        this.store.moveCard(cardId, x, y);
+      },
+      onCardDragEnd: (moved) => {
+        this.store.endMoveSession(moved);
       },
     });
 
     this.unsubscribe = this.store.subscribe((event) => {
-      if (event.type === 'camera') {
-        this.renderer.setCamera(event.camera);
-        this.chrome.setZoom(event.camera.zoom);
-        this.updateGrid(event.camera);
-      } else if (event.type === 'card') {
-        this.renderer.syncCard(event.card);
-      } else if (event.type === 'cards') {
-        this.renderer.syncCards(event.cards, this.store.getSelectedId());
-        this.chrome.setCardCount(event.cards.length);
-      } else {
-        this.renderer.setSelection(event.selectedId);
+      this.handleStoreEvent(event);
+      if (
+        !this.suppressPersistence &&
+        (event.type === 'cards' || event.type === 'card' || event.type === 'camera')
+      ) {
+        const current = this.store.getSnapshot();
+        this.persistence.schedule(current.cards, current.zCounter, current.camera);
       }
     });
 
     window.addEventListener('resize', this.handleResize);
+    window.addEventListener('pagehide', this.handlePageHide);
 
     if (!this.capabilities.canvas) {
       window.setTimeout(() => {
@@ -210,11 +296,14 @@ export class App {
   destroy(): void {
     this.destroyed = true;
     this.cancelCameraAnimation();
+    this.persistence.flush();
+    this.persistence.stop();
     this.detachInteractions?.();
     this.unsubscribe?.();
     this.renderer.destroy();
     this.chrome.destroy();
     window.removeEventListener('resize', this.handleResize);
+    window.removeEventListener('pagehide', this.handlePageHide);
     this.board.remove();
   }
 
@@ -246,20 +335,46 @@ export class App {
     if (camera.zoom >= 0.7) {
       return;
     }
+    const card = this.store.getCard(cardId);
     const element = this.renderer.getCardElement(cardId);
-    if (!element) {
+    if (!card || !element) {
       return;
     }
-    const cardRect = element.getBoundingClientRect();
-    const boardRect = this.board.getBoundingClientRect();
-    const worldCenter = screenToWorld(camera, {
-      x: cardRect.left - boardRect.left + cardRect.width / 2,
-      y: cardRect.top - boardRect.top + cardRect.height / 2,
-    });
+    const worldCenter = {
+      x: card.x + CARD_WIDTHS[card.width] / 2,
+      y: card.y + element.offsetHeight / 2,
+    };
     const target = editingAssistCamera(camera, this.viewport, worldCenter);
     if (target) {
       this.animateCamera(target, 240);
     }
+  }
+
+  private handleStoreEvent(event: StoreEvent): void {
+    if (event.type === 'camera') {
+      this.renderer.setCamera(event.camera);
+      this.chrome.setZoom(event.camera.zoom);
+      this.updateGrid(event.camera);
+      this.updateSelectionToolbar();
+      return;
+    }
+    if (event.type === 'card') {
+      this.renderer.syncCard(event.card);
+      this.updateSelectionToolbar();
+      return;
+    }
+    if (event.type === 'cards') {
+      this.renderer.syncCards(event.cards, this.store.getSelectedId());
+      this.chrome.setCardCount(event.cards.length);
+      this.updateSelectionToolbar();
+      return;
+    }
+    if (event.type === 'selection') {
+      this.renderer.setSelection(event.selectedId);
+      this.updateSelectionToolbar();
+      return;
+    }
+    this.chrome.setHistoryState(event.state);
   }
 
   private handleCanvasFailure(error: unknown): void {
@@ -283,6 +398,7 @@ export class App {
       this.chrome.showToast(
         'The canvas renderer hit a drawing error, so the board switched to the DOM renderer. Nothing was lost.',
       );
+      this.updateSelectionToolbar();
       console.warn('Canvas drawing failed; continuing in DOM mode.', error);
     });
   }
@@ -299,6 +415,11 @@ export class App {
     this.viewport = this.measureViewport();
     this.updateGrid(this.store.getCamera());
     this.renderer.invalidate();
+    this.updateSelectionToolbar();
+  };
+
+  private readonly handlePageHide = (): void => {
+    this.persistence.flush();
   };
 
   private updateGrid(camera: Camera): void {
@@ -336,8 +457,10 @@ export class App {
 
   private addNote(): void {
     const snapshot = this.store.getSnapshot();
-    if (snapshot.cards.length >= 500) {
-      this.chrome.showToast('This wall is full at 500 cards. Remove a note before adding another.');
+    if (snapshot.cards.length >= MAX_CARDS) {
+      this.chrome.showToast(
+        `This wall is full at ${MAX_CARDS} cards. Remove a note before adding another.`,
+      );
       return;
     }
 
@@ -347,8 +470,8 @@ export class App {
     });
     const card: Card = {
       id: newCardId(),
-      x: center.x - CARD_WIDTHS.regular / 2,
-      y: center.y - 80,
+      x: center.x - CARD_WIDTHS.regular / 2 + ADD_OFFSET,
+      y: center.y - 80 + ADD_OFFSET,
       width: 'regular',
       color: 'butter',
       tag: 'NOTE',
@@ -359,6 +482,135 @@ export class App {
     };
     this.store.addCard(card);
     this.store.select(card.id);
+    this.focusTitle(card.id);
+  }
+
+  private focusTitle(cardId: string): void {
+    const title = this.renderer.getCardElement(cardId)?.querySelector<HTMLElement>('.card__title');
+    if (!title) {
+      return;
+    }
+    title.focus();
+    const selection = window.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  private deleteSelected(): void {
+    if (isTextField(document.activeElement)) {
+      return;
+    }
+    const selectedId = this.store.getSelectedId();
+    if (selectedId) {
+      this.store.removeCard(selectedId);
+    }
+  }
+
+  private duplicateSelected(): void {
+    if (isTextField(document.activeElement)) {
+      return;
+    }
+    if (this.store.getCards().length >= MAX_CARDS) {
+      this.chrome.showToast(
+        `This wall is full at ${MAX_CARDS} cards. Remove a note before duplicating another.`,
+      );
+      return;
+    }
+    const selectedId = this.store.getSelectedId();
+    if (selectedId) {
+      this.store.duplicateCard(selectedId);
+    }
+  }
+
+  private colorSelected(color: CardColor): void {
+    const selectedId = this.store.getSelectedId();
+    if (selectedId) {
+      this.store.setCardColor(selectedId, color);
+    }
+  }
+
+  private undo(): void {
+    if (isTextField(document.activeElement)) {
+      return;
+    }
+    this.store.undo();
+  }
+
+  private redo(): void {
+    if (isTextField(document.activeElement)) {
+      return;
+    }
+    this.store.redo();
+  }
+
+  private resetDemo(): void {
+    this.cancelCameraAnimation();
+    this.suppressPersistence = true;
+    try {
+      const seed = createSeed();
+      const camera = initialCamera(this.viewport);
+      this.store.resetBoard(seed, camera);
+      this.persistence.clearStored();
+      this.persistence.schedule(seed.cards, seed.zCounter, camera);
+    } finally {
+      this.suppressPersistence = false;
+    }
+    this.chrome.showToast('Demo board restored: 216 cards and the opening camera.');
+  }
+
+  private clearSavedData(): void {
+    this.cancelCameraAnimation();
+    this.suppressPersistence = true;
+    try {
+      const seed = createSeed();
+      this.store.resetBoard(seed, initialCamera(this.viewport));
+    } finally {
+      this.suppressPersistence = false;
+    }
+    const cleared = this.persistence.clearStored();
+    this.persistence.setSessionOnly();
+    if (this.hasStorage && !cleared) {
+      this.persistence.markStatus('error');
+      this.chrome.showToast(
+        'Saved data could not be cleared, but this session is still usable. Check browser storage settings.',
+      );
+      return;
+    }
+    this.chrome.showToast('Saved data cleared. The demo board is back for this session.');
+  }
+
+  private updateSelectionToolbar(): void {
+    const selectedId = this.store.getSelectedId();
+    const card = selectedId ? this.store.getCard(selectedId) : undefined;
+    const element = selectedId ? this.renderer.getCardElement(selectedId) : null;
+    if (!card || !element) {
+      this.chrome.updateSelectionToolbar(null);
+      return;
+    }
+
+    // Derive screen geometry from the model and camera, not painted DOM
+    // rectangles: in canvas mode hit-test geometry updates a paint later and a
+    // stale toolbar could cover the card's own drag strip.
+    const camera = this.store.getCamera();
+    const left = (card.x - camera.x) * camera.zoom;
+    const top = (card.y - camera.y) * camera.zoom;
+    const width = CARD_WIDTHS[card.width] * camera.zoom;
+    const height = element.offsetHeight * camera.zoom;
+    this.chrome.updateSelectionToolbar({
+      color: card.color,
+      rect: {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+      },
+      viewport: this.viewport,
+    });
   }
 
   private animateCamera(target: Camera, durationMs: number): void {

@@ -1,4 +1,22 @@
+import type { ViewportSize } from '../camera/camera';
 import type { RenderMode } from '../render/mode';
+import type { HistoryState } from '../store/store';
+import { CARD_COLORS, type CardColor } from '../store/types';
+
+export type SaveState = 'saving' | 'saved' | 'session' | 'error';
+
+export interface ToolbarRect {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+export interface SelectionToolbarState {
+  readonly color: CardColor;
+  readonly rect: ToolbarRect;
+  readonly viewport: ViewportSize;
+}
 
 export interface ChromeHandlers {
   readonly onAddNote: () => void;
@@ -6,6 +24,13 @@ export interface ChromeHandlers {
   readonly onZoomOut: () => void;
   readonly onResetZoom: () => void;
   readonly onFit: () => void;
+  readonly onUndo: () => void;
+  readonly onRedo: () => void;
+  readonly onDuplicate: () => void;
+  readonly onDelete: () => void;
+  readonly onColor: (color: CardColor) => void;
+  readonly onResetDemo: () => void;
+  readonly onClearSavedData: () => void;
 }
 
 export interface Chrome {
@@ -13,11 +38,23 @@ export interface Chrome {
   setRenderer(mode: RenderMode, note?: string): void;
   setCardCount(count: number): void;
   setZoom(zoom: number): void;
-  setSaveState(label: string, state: 'saved' | 'session' | 'error'): void;
+  setSaveState(label: string, state: SaveState): void;
+  setHistoryState(state: HistoryState): void;
+  updateSelectionToolbar(selection: SelectionToolbarState | null): void;
   showToast(message: string, durationMs?: number): void;
   openHelp(): void;
   destroy(): void;
 }
+
+const COLOR_LABELS: Record<CardColor, string> = {
+  cream: 'Cream',
+  butter: 'Butter',
+  rose: 'Rose',
+  mint: 'Mint',
+  sky: 'Sky',
+  lilac: 'Lilac',
+  peach: 'Peach',
+};
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -50,6 +87,10 @@ function shortcutRow(keys: string, description: string): HTMLLIElement {
   return row;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 export function createChrome(handlers: ChromeHandlers): Chrome {
   const root = el('div', 'chrome');
   root.dataset.ui = '';
@@ -74,10 +115,12 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   brand.append(brandMark, brandCopy, addButton);
 
   const history = el('div', 'history');
-  const undo = button('icon-button', 'Undo (available after the editing slice)', '↶');
+  const undo = button('icon-button', 'Undo (Ctrl/Cmd+Z)', '↶');
   undo.disabled = true;
-  const redo = button('icon-button', 'Redo (available after the editing slice)', '↷');
+  undo.addEventListener('click', handlers.onUndo);
+  const redo = button('icon-button', 'Redo (Shift+Ctrl/Cmd+Z)', '↷');
   redo.disabled = true;
+  redo.addEventListener('click', handlers.onRedo);
   const helpButton = button('icon-button help-button', 'Help and shortcuts', '?');
   history.append(undo, redo, helpButton);
 
@@ -94,6 +137,7 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
 
   const saveItem = el('span', 'status__item status__save');
   saveItem.dataset.state = 'session';
+  saveItem.setAttribute('aria-live', 'polite');
   const saveDot = el('span', 'status__dot');
   saveDot.setAttribute('aria-hidden', 'true');
   const saveText = el('span', 'status__save-text', 'Session only');
@@ -125,6 +169,32 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   toast.setAttribute('aria-live', 'polite');
   toast.hidden = true;
 
+  const selectionToolbar = el('div', 'selection-toolbar');
+  selectionToolbar.hidden = true;
+  selectionToolbar.setAttribute('role', 'toolbar');
+  selectionToolbar.setAttribute('aria-label', 'Selected card actions');
+  const colorGroup = el('div', 'selection-toolbar__colors');
+  colorGroup.setAttribute('role', 'group');
+  colorGroup.setAttribute('aria-label', 'Card color');
+  const swatches = new Map<CardColor, HTMLButtonElement>();
+  for (const color of CARD_COLORS) {
+    const swatch = button('selection-toolbar__swatch', `${COLOR_LABELS[color]} card color`);
+    swatch.dataset.color = color;
+    swatch.setAttribute('aria-pressed', 'false');
+    swatch.addEventListener('click', () => handlers.onColor(color));
+    swatches.set(color, swatch);
+    colorGroup.append(swatch);
+  }
+  const duplicate = button('selection-toolbar__action', 'Duplicate selected card', 'Duplicate');
+  duplicate.addEventListener('click', handlers.onDuplicate);
+  const remove = button(
+    'selection-toolbar__action selection-toolbar__action--danger',
+    'Delete selected card',
+    'Delete',
+  );
+  remove.addEventListener('click', handlers.onDelete);
+  selectionToolbar.append(colorGroup, el('span', 'selection-toolbar__divider'), duplicate, remove);
+
   const dialog = el('dialog', 'help');
   const helpHeadingId = 'help-heading';
   dialog.setAttribute('aria-labelledby', helpHeadingId);
@@ -138,19 +208,42 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   const helpIntro = el(
     'p',
     'help__intro',
-    'In Chrome 157 and later, the cards are real children of a canvas and painted with the experimental HTML-in-Canvas API. Everywhere else the same cards live in a transformed DOM layer. Either way, the text is real.',
+    'In Chrome 157 and later, the cards are real children of a canvas and painted with the experimental HTML-in-Canvas API. Everywhere else the same cards live in a transformed DOM layer. Either way, the text is real, editable, and saved on this device.',
   );
 
   const moveHeading = el('h3', 'help__subhead', 'Move around');
   const moves = el('ul', 'help__shortcuts');
   moves.append(
     shortcutRow('Drag', 'Pan the board from empty paper'),
+    shortcutRow('Space + drag', 'Pan even when the pointer starts on a card'),
+    shortcutRow('Middle-drag', 'Pan from anywhere on the board'),
     shortcutRow('Scroll', 'Pan with a wheel or trackpad'),
     shortcutRow('Ctrl/Cmd + scroll', 'Zoom toward the pointer'),
+    shortcutRow('Arrow keys', 'Pan 80 px; hold Shift for 240 px'),
     shortcutRow('+ / −', 'Zoom in and out'),
     shortcutRow('0', 'Fit the whole board'),
     shortcutRow('1', 'Return to 100 percent'),
+  );
+
+  const cardHeading = el('h3', 'help__subhead', 'Edit and arrange cards');
+  const cardMoves = el('ul', 'help__shortcuts');
+  cardMoves.append(
+    shortcutRow('Click text', 'Put a real caret in the title, body, or checklist'),
+    shortcutRow('Click chrome', 'Select a card and open its toolbar'),
+    shortcutRow('Drag top strip', 'Move a card; it comes to the front'),
     shortcutRow('N', 'Add a note at the centre'),
+    shortcutRow('Ctrl/Cmd + D', 'Duplicate the selected card'),
+    shortcutRow('Delete / Backspace', 'Delete the selected card when not typing'),
+    shortcutRow('Esc', 'Leave a text field, then clear the selection'),
+    shortcutRow('Toolbar', 'Change colour, duplicate, or delete'),
+  );
+
+  const historyHeading = el('h3', 'help__subhead', 'Undo and redo');
+  const historyMoves = el('ul', 'help__shortcuts');
+  historyMoves.append(
+    shortcutRow('Ctrl/Cmd + Z', 'Undo a board change or a whole text session'),
+    shortcutRow('Shift + Ctrl/Cmd + Z', 'Redo'),
+    shortcutRow('While typing', 'Native text undo stays native'),
   );
 
   const findHeading = el('h3', 'help__subhead', 'Native find is the point');
@@ -159,6 +252,32 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
     'help__copy',
     'Press Ctrl/Cmd+F and search for needle. The browser highlights real text inside a real card — no custom search field, no painted fake. The seeded board deliberately hides the word in a few places.',
   );
+
+  const dataHeading = el('h3', 'help__subhead', 'Board data');
+  const dataCopy = el(
+    'p',
+    'help__copy',
+    'The board and camera save automatically in this browser. Undo history stays in this session. Resetting restores the curated 216-card demo; clearing removes the saved record.',
+  );
+  const dataActions = el('div', 'help__data-actions');
+  const resetDemo = button('help__secondary', 'Reset demo', 'Reset demo');
+  const clearData = button('help__secondary', 'Clear saved data', 'Clear saved data');
+  dataActions.append(resetDemo, clearData);
+
+  const confirmPanel = el('div', 'help__confirm');
+  confirmPanel.hidden = true;
+  confirmPanel.setAttribute('role', 'group');
+  confirmPanel.setAttribute('aria-label', 'Confirm board data action');
+  const confirmCopy = el('p', 'help__confirm-copy');
+  confirmCopy.id = 'help-confirm-copy';
+  const confirmActions = el('div', 'help__confirm-actions');
+  const cancelConfirm = button('help__secondary', 'Cancel', 'Cancel');
+  const confirmAction = button('help__danger', 'Confirm action', 'Confirm');
+  confirmAction.setAttribute('aria-describedby', confirmCopy.id);
+  confirmActions.append(cancelConfirm, confirmAction);
+  confirmPanel.append(confirmCopy, confirmActions);
+  const dataSection = el('div', 'help__data');
+  dataSection.append(dataCopy, dataActions, confirmPanel);
 
   const supportHeading = el('h3', 'help__subhead', 'Browser support');
   const supportCopy = el(
@@ -176,20 +295,34 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
     helpIntro,
     moveHeading,
     moves,
+    cardHeading,
+    cardMoves,
+    historyHeading,
+    historyMoves,
     findHeading,
     findCopy,
+    dataHeading,
+    dataSection,
     supportHeading,
     supportCopy,
     closeRow,
   );
   dialog.append(helpInner);
 
-  root.append(brand, history, status, zoom, toast, dialog);
+  root.append(brand, history, status, zoom, toast, dialog, selectionToolbar);
 
   let toastTimer: number | undefined;
   let lastFocused: HTMLElement | null = null;
+  let pendingDataAction: 'reset' | 'clear' | null = null;
+
+  const resetConfirm = (): void => {
+    pendingDataAction = null;
+    confirmPanel.hidden = true;
+    dataActions.hidden = false;
+  };
 
   const closeHelp = (): void => {
+    resetConfirm();
     if (dialog.open) {
       dialog.close();
     }
@@ -204,11 +337,47 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
     closeButton.focus();
   };
 
+  const showConfirm = (action: 'reset' | 'clear'): void => {
+    pendingDataAction = action;
+    confirmCopy.textContent =
+      action === 'reset'
+        ? 'Reset the demo? This replaces the current board with the curated 216-card wall and the opening camera. Your saved edits on this device will be removed.'
+        : 'Clear the saved board from this browser? The demo board returns for this session, and future edits will save again.';
+    confirmAction.textContent = action === 'reset' ? 'Reset demo' : 'Clear saved data';
+    confirmAction.setAttribute(
+      'aria-label',
+      action === 'reset' ? 'Confirm reset demo' : 'Confirm clear saved data',
+    );
+    dataActions.hidden = true;
+    confirmPanel.hidden = false;
+    confirmAction.focus();
+  };
+
+  resetDemo.addEventListener('click', () => showConfirm('reset'));
+  clearData.addEventListener('click', () => showConfirm('clear'));
+  cancelConfirm.addEventListener('click', () => {
+    const origin = pendingDataAction === 'clear' ? clearData : resetDemo;
+    resetConfirm();
+    origin.focus();
+  });
+  confirmAction.addEventListener('click', () => {
+    const action = pendingDataAction;
+    resetConfirm();
+    if (action === 'reset') {
+      handlers.onResetDemo();
+    } else if (action === 'clear') {
+      handlers.onClearSavedData();
+    }
+    closeHelp();
+  });
+
   helpButton.addEventListener('click', openHelp);
   close.addEventListener('click', closeHelp);
   closeButton.addEventListener('click', closeHelp);
   dialog.addEventListener('close', () => {
-    lastFocused?.focus();
+    resetConfirm();
+    const target = lastFocused?.isConnected ? lastFocused : helpButton;
+    target.focus();
     lastFocused = null;
   });
   dialog.addEventListener('click', (event) => {
@@ -236,9 +405,45 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
       zoomLevel.textContent = `${percent}%`;
       zoomLevel.setAttribute('aria-label', `Zoom ${percent} percent. Reset to 100 percent.`);
     },
-    setSaveState(label: string, state: 'saved' | 'session' | 'error'): void {
+    setSaveState(label: string, state: SaveState): void {
       saveText.textContent = label;
       saveItem.dataset.state = state;
+    },
+    setHistoryState(state: HistoryState): void {
+      undo.disabled = !state.canUndo;
+      redo.disabled = !state.canRedo;
+    },
+    updateSelectionToolbar(selection: SelectionToolbarState | null): void {
+      if (!selection) {
+        selectionToolbar.hidden = true;
+        return;
+      }
+
+      for (const [color, swatch] of swatches) {
+        swatch.setAttribute('aria-pressed', color === selection.color ? 'true' : 'false');
+      }
+
+      selectionToolbar.hidden = false;
+      const width = selectionToolbar.offsetWidth;
+      const height = selectionToolbar.offsetHeight;
+      const margin = 8;
+      const gap = 10;
+      // Keep clear of the floating brand/history row; flip below the card
+      // rather than covering chrome the user still needs.
+      const topSafe = 96;
+      const maxLeft = Math.max(margin, selection.viewport.width - width - margin);
+      const left = clamp(
+        selection.rect.left + (selection.rect.right - selection.rect.left) / 2 - width / 2,
+        margin,
+        maxLeft,
+      );
+      let top = selection.rect.top - height - gap;
+      if (top < topSafe) {
+        top = selection.rect.bottom + gap;
+      }
+      const maxTop = Math.max(margin, selection.viewport.height - height - margin);
+      selectionToolbar.style.left = `${Math.round(left)}px`;
+      selectionToolbar.style.top = `${Math.round(clamp(top, margin, maxTop))}px`;
     },
     showToast(message: string, durationMs = 4500): void {
       if (toastTimer !== undefined) {

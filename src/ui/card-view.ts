@@ -39,7 +39,11 @@ function makeElement<K extends keyof HTMLElementTagNameMap>(
  * engines fall back to the boolean form; paste normalization still applies.
  */
 function makePlainTextEditable(element: HTMLElement): void {
-  element.contentEditable = 'plaintext-only';
+  try {
+    element.contentEditable = 'plaintext-only';
+  } catch {
+    // Older engines reject the token; the boolean form still edits text.
+  }
   if (element.contentEditable !== 'plaintext-only') {
     element.contentEditable = 'true';
   }
@@ -47,7 +51,7 @@ function makePlainTextEditable(element: HTMLElement): void {
 }
 
 function singleLineText(value: string): string {
-  return value.replace(/[\r\n]+/g, ' ').replace(/[ \t]+/g, ' ');
+  return value.replace(/[\r\n]+/g, ' ');
 }
 
 function plainText(value: string): string {
@@ -166,9 +170,9 @@ export function createCardView(card: Card, handlers: CardViewHandlers): CardView
 
   const syncChecklistItem = (view: ChecklistView, item: ChecklistItem, index: number): void => {
     view.input.dataset.checkId = item.id;
-    if (document.activeElement !== view.input) {
-      view.input.checked = item.done;
-    }
+    // A checkbox always mirrors the model, even while focused; this keeps
+    // undo/redo honest without touching native text selection or carets.
+    view.input.checked = item.done;
     const label = item.text.trim().length > 0 ? item.text : `checklist item ${index + 1}`;
     view.input.setAttribute('aria-label', `Toggle ${label}`);
     view.input.id = `${card.id}-toggle-${item.id}`;

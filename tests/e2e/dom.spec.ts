@@ -10,7 +10,10 @@ import {
   expectNoOverlappingCards,
   findEmptyPoint,
   rendererBadge,
+  runBoardManipulationJourney,
   runEditableCardsJourney,
+  selectedCard,
+  selectionToolbar,
   viewportHasNoScrollbars,
   watchConsole,
   zoomLevel,
@@ -82,6 +85,79 @@ test('edits live card text, checklists, and assists low-zoom editing', async ({ 
   await runEditableCardsJourney(page, 'DOM', consoleProblems);
 });
 
+test('adds, drags, duplicates, undoes, persists, and resets the board', async ({ page }) => {
+  const consoleProblems = watchConsole(page);
+  await runBoardManipulationJourney(page, 'DOM', consoleProblems);
+});
+
+test('reseeds safely when the saved schema is unsupported', async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem(
+        'infinite-workspace:board:v1',
+        JSON.stringify({ version: 99, cards: [], zCounter: 0, camera: { x: 0, y: 0, zoom: 1 } }),
+      );
+    } catch {
+      // Storage may be unavailable on the initial about:blank document.
+    }
+  });
+
+  const consoleProblems = watchConsole(page);
+  await page.goto('/?render=dom');
+  await expectBoardReady(page, 'DOM');
+  await expect(card(page, 'card-000')).toContainText('The wall is real');
+  await expect(page.locator('.status__save-text')).toHaveText('Saved');
+  expect(consoleProblems.messages).toEqual([]);
+});
+
+test('stays usable and reports Not saved when storage writes fail', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function setItem(this: Storage, key: string, value: string): void {
+      if (key.startsWith('infinite-workspace')) {
+        throw new DOMException('Storage is blocked', 'QuotaExceededError');
+      }
+      original.call(this, key, value);
+    };
+  });
+
+  const consoleProblems = watchConsole(page);
+  await page.goto('/?render=dom');
+  await expectBoardReady(page, 'DOM');
+  await expect(page.locator('.status__save-text')).toHaveText('Not saved');
+
+  await page.keyboard.press('n');
+  await expect(cards(page)).toHaveCount(217);
+  await expect(selectedCard(page)).toHaveCount(1);
+  await page.keyboard.type('Still usable');
+  await expect(selectedCard(page).locator('.card__title')).toHaveText('Still usable');
+  await expect(page.locator('.status__save-text')).toHaveText('Not saved');
+  expect(consoleProblems.messages).toEqual([]);
+});
+
+test('keeps the selection toolbar inside a narrow viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const consoleProblems = watchConsole(page);
+  await page.goto('/?render=dom');
+  await expectBoardReady(page, 'DOM');
+
+  await card(page, 'card-000').click();
+  await expect(selectedCard(page)).toHaveCount(1);
+  await expect(page.locator('.status__save-text')).toBeVisible();
+  const toolbar = selectionToolbar(page);
+  await expect(toolbar).toBeVisible();
+  const box = await toolbar.boundingBox();
+  expect(box).not.toBeNull();
+  if (box) {
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+    expect(box.y + box.height).toBeLessThanOrEqual(844);
+  }
+  await viewportHasNoScrollbars(page);
+  expect(consoleProblems.messages).toEqual([]);
+});
+
 test('pans, zooms, fits, and selects without remounting cards', async ({ page }) => {
   const consoleProblems = watchConsole(page);
   await page.goto('/?render=dom');
@@ -126,6 +202,16 @@ test('pans, zooms, fits, and selects without remounting cards', async ({ page })
   await expect
     .poll(async () => (await cardBox(page, 'card-001')).y)
     .toBeLessThan(beforeWheel.y - 120);
+
+  const beforeMiddlePan = await cardBox(page, 'card-001');
+  const middleStart = await findEmptyPoint(page);
+  await page.mouse.move(middleStart.x, middleStart.y);
+  await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(middleStart.x + 70, middleStart.y + 40, { steps: 6 });
+  await page.mouse.up({ button: 'middle' });
+  await expect
+    .poll(async () => (await cardBox(page, 'card-001')).x)
+    .toBeGreaterThan(beforeMiddlePan.x + 50);
 
   const beforeZoom = await currentZoom(page);
   await page.keyboard.down('Control');

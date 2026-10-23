@@ -60,6 +60,12 @@ button {
   cursor: grabbing !important;
 }
 
+.board.is-card-dragging,
+.board.is-card-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
 .board__grid {
   position: absolute;
   inset: 0;

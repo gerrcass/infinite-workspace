@@ -305,6 +305,13 @@
   box-shadow: 5px 5px 0 var(--ink);
 }
 
+/* The welcome card has its own shadow; selection still needs the accent ring. */
+.card[data-tag='START HERE'].is-selected {
+  box-shadow:
+    inset 0 0 0 3px var(--accent),
+    5px 5px 0 var(--ink);
+}
+
 .card[data-tag='START HERE'] .card__title {
   font-size: 25px;
   font-weight: 720;
