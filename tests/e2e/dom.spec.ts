@@ -54,9 +54,12 @@ test('loads the seeded wall in DOM mode with complete chrome', async ({ page }) 
   await expect(card(page, 'card-000')).toContainText('The wall is real');
   await expect(card(page, 'card-000')).toContainText('needle');
   await expect(page.locator('canvas')).toHaveCount(0);
-  await expect(
-    page.getByRole('button', { name: 'Add note at the centre of the view' }),
-  ).toBeVisible();
+  const addButton = page.getByRole('button', { name: 'Add note at the centre of the view' });
+  await expect(addButton).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(page.locator('.board')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(addButton).toBeFocused();
   const helpButton = page.getByRole('button', { name: 'Help and shortcuts' });
   await expect(helpButton).toBeVisible();
   await helpButton.click();

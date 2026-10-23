@@ -108,7 +108,9 @@ export class App {
       onResetZoom: () => this.resetZoom(),
       onFit: () => this.fitBoard(),
     });
-    this.board.append(this.chrome.element);
+    // Chrome comes before the 216 card articles in DOM order so keyboard users
+    // reach the toolbar before tabbing through the whole wall.
+    this.board.insertBefore(this.chrome.element, this.scene);
 
     const resolution = resolveRenderMode(this.requestedMode, this.capabilities);
     this.renderer = this.createRenderer(resolution.mode);
