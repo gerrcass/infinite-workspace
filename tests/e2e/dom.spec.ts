@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
   card,
   cardBox,
+  cardCount,
   cards,
   currentZoom,
   expectBoardReady,
@@ -90,6 +91,15 @@ test('pans, zooms, fits, and selects without remounting cards', async ({ page })
   const emptyForClear = await findEmptyPoint(page);
   await page.mouse.click(emptyForClear.x, emptyForClear.y);
   await expect(cardOne).toHaveAttribute('data-selected', 'false');
+
+  const checkbox = cardOne.locator('input[type="checkbox"]').first();
+  const checkedBefore = await checkbox.isChecked();
+  await checkbox.click();
+  expect(await checkbox.isChecked()).toBe(!checkedBefore);
+
+  await page.getByRole('button', { name: 'Add note at the centre of the view' }).click();
+  await expect(cardCount(page)).toHaveText('217 cards');
+  expect(await checkbox.isChecked()).toBe(!checkedBefore);
 
   const start = await cardBox(page, 'card-001');
   const empty = await findEmptyPoint(page);

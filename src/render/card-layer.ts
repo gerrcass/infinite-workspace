@@ -61,7 +61,7 @@ export class CardLayer {
       const stored = this.views.get(card.id);
       if (!stored) {
         this.create(card);
-      } else {
+      } else if (stored.card !== card) {
         stored.card = card;
         stored.view.update(card);
       }
