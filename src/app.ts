@@ -9,7 +9,9 @@ import {
 import { createSeed } from './store/seed';
 import { BoardStore } from './store/store';
 import { CARD_WIDTHS, type Card } from './store/types';
+import { CanvasRenderer, detectCanvasSupport } from './render/canvas-renderer';
 import { DomRenderer } from './render/dom-renderer';
+import { parseRenderModeParam, resolveRenderMode, type RenderMode } from './render/mode';
 import type { Renderer } from './render/renderer';
 import { createChrome, type Chrome } from './ui/chrome';
 import { attachInteractions } from './ui/interactions';
@@ -68,6 +70,10 @@ export class App {
   private cameraFrame = 0;
   private destroyed = false;
   private viewport: ViewportSize;
+  private readonly capabilities = { canvas: detectCanvasSupport() };
+  private readonly requestedMode = parseRenderModeParam(
+    new URLSearchParams(window.location.search).get('render'),
+  );
 
   constructor(private readonly root: HTMLElement) {
     this.root.replaceChildren();
@@ -104,8 +110,8 @@ export class App {
     });
     this.board.append(this.chrome.element);
 
-    // The canvas renderer arrives in the next slice. The DOM path is complete now.
-    this.renderer = new DomRenderer({ container: this.scene });
+    const resolution = resolveRenderMode(this.requestedMode, this.capabilities);
+    this.renderer = this.createRenderer(resolution.mode);
 
     const snapshot = this.store.getSnapshot();
     this.renderer.mount({
@@ -114,7 +120,14 @@ export class App {
       selectedId: snapshot.selectedId,
     });
 
-    this.chrome.setRenderer('dom', 'Every card is positioned in the DOM renderer');
+    this.chrome.setRenderer(
+      this.renderer.kind,
+      this.renderer.kind === 'canvas'
+        ? 'Cards are painted by the HTML-in-Canvas renderer'
+        : this.capabilities.canvas
+          ? 'Cards are positioned in the DOM renderer'
+          : 'HTML-in-Canvas is unavailable; the complete DOM renderer is active',
+    );
     this.chrome.setCardCount(snapshot.cards.length);
     this.chrome.setZoom(snapshot.camera.zoom);
     this.chrome.setSaveState('Session only', 'session');
@@ -152,6 +165,19 @@ export class App {
     });
 
     window.addEventListener('resize', this.handleResize);
+
+    if (!this.capabilities.canvas) {
+      window.setTimeout(() => {
+        if (this.destroyed) {
+          return;
+        }
+        this.chrome.showToast(
+          this.requestedMode === 'canvas'
+            ? 'The canvas renderer needs Chrome 157+. The board is using the complete DOM renderer instead.'
+            : 'HTML-in-Canvas is not available in this browser. Every card is rendered in the DOM, with all features intact.',
+        );
+      }, 500);
+    }
   }
 
   destroy(): void {
@@ -163,6 +189,46 @@ export class App {
     this.chrome.destroy();
     window.removeEventListener('resize', this.handleResize);
     this.board.remove();
+  }
+
+  private createRenderer(mode: RenderMode): Renderer {
+    if (mode === 'canvas') {
+      try {
+        return new CanvasRenderer({
+          container: this.scene,
+          onRuntimeError: (error) => this.handleCanvasFailure(error),
+        });
+      } catch (error) {
+        this.chrome.showToast(
+          'The canvas renderer could not start, so the board is using the DOM renderer. Nothing was lost.',
+        );
+        console.warn('Canvas renderer could not start; using DOM.', error);
+      }
+    }
+
+    return new DomRenderer({ container: this.scene });
+  }
+
+  private handleCanvasFailure(error: unknown): void {
+    queueMicrotask(() => {
+      if (this.destroyed || this.renderer.kind === 'dom') {
+        return;
+      }
+
+      const snapshot = this.store.getSnapshot();
+      this.renderer.destroy();
+      this.renderer = new DomRenderer({ container: this.scene });
+      this.renderer.mount({
+        cards: snapshot.cards,
+        camera: snapshot.camera,
+        selectedId: snapshot.selectedId,
+      });
+      this.chrome.setRenderer('dom', 'Canvas drawing failed; the DOM renderer is active');
+      this.chrome.showToast(
+        'The canvas renderer hit a drawing error, so the board switched to the DOM renderer. Nothing was lost.',
+      );
+      console.warn('Canvas drawing failed; continuing in DOM mode.', error);
+    });
   }
 
   private measureViewport(): ViewportSize {
