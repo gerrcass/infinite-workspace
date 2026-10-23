@@ -1,5 +1,5 @@
 import type { Camera } from '../camera/camera';
-import { clampZoom, isFiniteCamera } from '../camera/camera';
+import { cameraEquals, clampZoom, isFiniteCamera } from '../camera/camera';
 import type { Board, Card, CardColor, ChecklistItem } from './types';
 
 export interface HistoryState {
@@ -395,7 +395,7 @@ export class BoardStore {
     const nextCamera = isFiniteCamera(camera)
       ? { ...camera, zoom: clampZoom(camera.zoom) }
       : camera;
-    const cameraChanged = !this.cameraEquals(nextCamera);
+    const cameraChanged = !cameraEquals(nextCamera, this.camera);
     if (cameraChanged) {
       this.camera = nextCamera;
       this.emit({ type: 'camera', camera: nextCamera });
@@ -498,12 +498,6 @@ export class BoardStore {
       this.emit({ type: 'selection', selectedId: this.selectedId });
     }
     this.emitHistory();
-  }
-
-  private cameraEquals(camera: Camera): boolean {
-    return (
-      camera.x === this.camera.x && camera.y === this.camera.y && camera.zoom === this.camera.zoom
-    );
   }
 
   private emitHistory(): void {

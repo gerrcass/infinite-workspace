@@ -9,7 +9,6 @@ import {
 } from './seed-content';
 
 export const SEED_CARD_COUNT = 216;
-export const SEED_VERSION = 1;
 
 const COLUMNS = 4;
 const COLUMN_PITCH = 300;

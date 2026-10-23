@@ -35,10 +35,6 @@ export interface Board {
   readonly zCounter: number;
 }
 
-export function cardWidth(card: Pick<Card, 'width'>): number {
-  return CARD_WIDTHS[card.width];
-}
-
 export function isCardColor(value: string): value is CardColor {
   return (CARD_COLORS as readonly string[]).includes(value);
 }

@@ -27,5 +27,5 @@ Reviewers apply these rules in addition to the acceptance criteria on the ticket
 
 - A test names the user-visible behavior, not the function call. Prefer `it('reveals an off-screen find match')` over `it('calls reveal')`.
 - Camera invariants are tested with multiple coordinate signs and zoom levels.
-- Browser tests visit the built app and use the render-mode URL override, never internal debug hooks that bypass UI.
+- Browser tests visit the built app and use the render-mode URL override, never internal debug hooks that bypass UI. Contract assertions on the HTML-in-Canvas attributes (`content="drawable"`, `drawable`) are allowed in tests; production code outside the canvas renderer still must not name them.
 - Performance assertions use recorded numbers and generous budgets; do not gate on exact frame times.

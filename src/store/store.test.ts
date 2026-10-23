@@ -98,7 +98,7 @@ describe('board store', () => {
     expect(store.getSelectedId()).toBeNull();
   });
 
-  it('updates card text without touching the focused field value', () => {
+  it('updates card text and treats repeated writes as no-ops', () => {
     const store = makeStore();
     const listener = vi.fn();
     store.subscribe(listener);

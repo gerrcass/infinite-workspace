@@ -11,6 +11,8 @@ import {
   findEmptyPoint,
   rendererBadge,
   runBoardManipulationJourney,
+  runDeleteFromCheckbox,
+  runEditingSelectionGuard,
   runEditableCardsJourney,
   runFindHintJourney,
   runNativeFindJourney,
@@ -146,6 +148,15 @@ test('keeps the selection toolbar inside a narrow viewport', async ({ page }) =>
   await card(page, 'card-000').click();
   await expect(selectedCard(page)).toHaveCount(1);
   await expect(page.locator('.status__save-text')).toBeVisible();
+  const undo = page.getByRole('button', { name: 'Undo (Ctrl/Cmd+Z)' });
+  const redo = page.getByRole('button', { name: 'Redo (Shift+Ctrl/Cmd+Z)' });
+  await expect(undo).toBeVisible();
+  await expect(redo).toBeVisible();
+  await page.getByRole('button', { name: 'Add note at the centre of the view' }).click();
+  await expect(cards(page)).toHaveCount(217);
+  await expect(undo).toBeEnabled();
+  await undo.click();
+  await expect(cards(page)).toHaveCount(216);
   const toolbar = selectionToolbar(page);
   await expect(toolbar).toBeVisible();
   const box = await toolbar.boundingBox();
@@ -248,4 +259,12 @@ test('reveals a selected find match inside a live card', async ({ page }) => {
 
 test('shows and remembers the native-find hint', async ({ page }) => {
   await runFindHintJourney(page, 'DOM');
+});
+
+test('does not move the camera when selecting text while editing', async ({ page }) => {
+  await runEditingSelectionGuard(page, 'DOM');
+});
+
+test('deletes a selected card while its checkbox is focused', async ({ page }) => {
+  await runDeleteFromCheckbox(page, 'DOM');
 });

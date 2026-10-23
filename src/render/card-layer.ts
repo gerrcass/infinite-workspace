@@ -93,10 +93,6 @@ export class CardLayer {
     return this.views.get(id)?.view.element;
   }
 
-  getCard(id: string): Card | undefined {
-    return this.views.get(id)?.card;
-  }
-
   entries(): CardLayerEntry[] {
     return [...this.views.values()].map((stored) => ({
       card: stored.card,

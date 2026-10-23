@@ -1,9 +1,11 @@
 import {
+  EDIT_ASSIST_BELOW_ZOOM,
   editingAssistCamera,
   fitBounds,
   initialCamera,
   revealBoundsCamera,
   screenToWorld,
+  worldToScreen,
   zoomAtCenter,
   type Camera,
   type ViewportSize,
@@ -12,6 +14,7 @@ import {
 import { createSeed } from './store/seed';
 import {
   BoardPersistence,
+  MAX_SAVED_CARDS,
   loadBoard,
   type SaveStatus,
   type StoragePort,
@@ -30,7 +33,6 @@ import { openBrowserStorage } from './ui/storage';
 const MINOR_GRID_WORLD = 20;
 const MAJOR_GRID_WORLD = 100;
 const FIT_PADDING = 90;
-const MAX_CARDS = 500;
 const ADD_OFFSET = 24;
 const HINT_DISMISSED_KEY = 'infinite-workspace:find-hint-dismissed:v1';
 const REVEAL_DURATION_MS = 280;
@@ -117,6 +119,8 @@ export class App {
   private unsubscribe: (() => void) | null = null;
   private cameraFrame = 0;
   private hintTimer = 0;
+  private lastUserInputAt = Number.NEGATIVE_INFINITY;
+  private editingFocus = false;
   private suppressPersistence = false;
   private destroyed = false;
   private viewport: ViewportSize;
@@ -142,7 +146,6 @@ export class App {
     this.grid.setAttribute('aria-hidden', 'true');
 
     this.scene = element('div', 'scene');
-    this.scene.dataset.testid = 'scene';
     this.scene.id = 'board-wall';
     this.scene.tabIndex = -1;
     this.scene.setAttribute('aria-label', 'Card wall');
@@ -267,11 +270,25 @@ export class App {
       onFit: () => this.fitBoard(),
       onHelp: () => this.chrome.openHelp(),
       onEditableFocus: (cardId) => {
+        // A programmatic focus (window.find, assistive tooling) is not an
+        // editing intent. Do not select, start a text session, or move the
+        // camera for it; the selectionchange handler reveals find matches.
+        console.debug(
+          'EDITFOCUS',
+          performance.now(),
+          this.lastUserInputAt,
+          performance.now() - this.lastUserInputAt,
+        );
+        if (performance.now() - this.lastUserInputAt > 400) {
+          return;
+        }
+        this.editingFocus = true;
         this.store.select(cardId);
         this.store.beginTextSession();
         this.assistEditing(cardId);
       },
       onEditableBlur: () => {
+        this.editingFocus = false;
         this.store.endTextSession();
       },
       onDeleteSelected: () => this.deleteSelected(),
@@ -305,6 +322,8 @@ export class App {
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('pagehide', this.handlePageHide);
     document.addEventListener('selectionchange', this.handleSelectionChange);
+    document.addEventListener('pointerdown', this.noteUserInput, true);
+    document.addEventListener('keydown', this.noteUserInput, true);
     this.scheduleFindHint();
 
     if (!this.capabilities.canvas) {
@@ -334,6 +353,8 @@ export class App {
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('pagehide', this.handlePageHide);
     document.removeEventListener('selectionchange', this.handleSelectionChange);
+    document.removeEventListener('pointerdown', this.noteUserInput, true);
+    document.removeEventListener('keydown', this.noteUserInput, true);
     if (this.perfEnabled) {
       delete (window as PerfWindow).__infiniteWorkspacePerf;
     }
@@ -365,7 +386,7 @@ export class App {
    */
   private assistEditing(cardId: string): void {
     const camera = this.store.getCamera();
-    if (camera.zoom >= 0.7) {
+    if (camera.zoom >= EDIT_ASSIST_BELOW_ZOOM) {
       return;
     }
     const card = this.store.getCard(cardId);
@@ -465,6 +486,9 @@ export class App {
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
       return;
     }
+    if (this.editingFocus) {
+      return;
+    }
 
     const anchor = selection.anchorNode;
     const anchorElement = anchor instanceof Element ? anchor : anchor?.parentElement;
@@ -493,12 +517,13 @@ export class App {
       maxY: card.y + Math.max(1, element.offsetHeight),
     };
     const target = revealBoundsCamera(this.store.getCamera(), this.viewport, bounds);
-    if (!target) {
-      return;
+    if (target) {
+      this.animateCamera(target, REVEAL_DURATION_MS);
     }
+  };
 
-    this.store.select(cardId);
-    this.animateCamera(target, REVEAL_DURATION_MS);
+  private readonly noteUserInput = (): void => {
+    this.lastUserInputAt = performance.now();
   };
 
   private scheduleFindHint(): void {
@@ -565,9 +590,9 @@ export class App {
 
   private addNote(): void {
     const snapshot = this.store.getSnapshot();
-    if (snapshot.cards.length >= MAX_CARDS) {
+    if (snapshot.cards.length >= MAX_SAVED_CARDS) {
       this.chrome.showToast(
-        `This wall is full at ${MAX_CARDS} cards. Remove a note before adding another.`,
+        `This wall is full at ${MAX_SAVED_CARDS} cards. Remove a note before adding another.`,
       );
       return;
     }
@@ -623,9 +648,9 @@ export class App {
     if (isTextField(document.activeElement)) {
       return;
     }
-    if (this.store.getCards().length >= MAX_CARDS) {
+    if (this.store.getCards().length >= MAX_SAVED_CARDS) {
       this.chrome.showToast(
-        `This wall is full at ${MAX_CARDS} cards. Remove a note before duplicating another.`,
+        `This wall is full at ${MAX_SAVED_CARDS} cards. Remove a note before duplicating another.`,
       );
       return;
     }
@@ -705,8 +730,9 @@ export class App {
     // rectangles: in canvas mode hit-test geometry updates a paint later and a
     // stale toolbar could cover the card's own drag strip.
     const camera = this.store.getCamera();
-    const left = (card.x - camera.x) * camera.zoom;
-    const top = (card.y - camera.y) * camera.zoom;
+    const topLeft = worldToScreen(camera, { x: card.x, y: card.y });
+    const left = topLeft.x;
+    const top = topLeft.y;
     const width = CARD_WIDTHS[card.width] * camera.zoom;
     const height = element.offsetHeight * camera.zoom;
     this.chrome.updateSelectionToolbar({

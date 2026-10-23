@@ -146,14 +146,12 @@ export function createCardView(card: Card, handlers: CardViewHandlers): CardView
   const title = makeElement('h2', 'card__title');
   title.id = titleId;
   title.dataset.field = 'title';
-  title.setAttribute('aria-label', 'Card title');
   title.setAttribute('aria-multiline', 'false');
   makePlainTextEditable(title);
   element.setAttribute('aria-labelledby', titleId);
 
   const body = makeElement('p', 'card__body');
   body.dataset.field = 'body';
-  body.setAttribute('aria-label', 'Card body');
   body.setAttribute('aria-multiline', 'true');
   makePlainTextEditable(body);
 
@@ -169,6 +167,10 @@ export function createCardView(card: Card, handlers: CardViewHandlers): CardView
     body.dataset.empty = (next.body.length === 0).toString();
     title.dataset.placeholder = 'Add a title';
     body.dataset.placeholder = 'Write something';
+    // A contenteditable heading does not derive its accessible name from its
+    // text, so mirror the title. This keeps heading navigation useful while
+    // preserving the editable field's own text as the visible content.
+    title.setAttribute('aria-label', next.title.trim() || 'Untitled card');
   };
 
   const syncChecklistItem = (view: ChecklistView, item: ChecklistItem, index: number): void => {
@@ -273,8 +275,10 @@ export function createCardView(card: Card, handlers: CardViewHandlers): CardView
   };
 
   title.addEventListener('input', () => {
+    const value = singleLineText(title.innerText);
     syncEmptyState(title, 'Add a title');
-    handlers.updateCardText(card.id, 'title', singleLineText(title.innerText));
+    title.setAttribute('aria-label', value.trim() || 'Untitled card');
+    handlers.updateCardText(card.id, 'title', value);
   });
   body.addEventListener('input', () => {
     syncEmptyState(body, 'Write something');

@@ -119,10 +119,6 @@ export function editingAssistCamera(
   return cameraCenteredOn(worldCenter, viewport, Math.max(camera.zoom, EDIT_ASSIST_ZOOM));
 }
 
-export function cameraCenterWorld(camera: Camera, viewport: ViewportSize): Point {
-  return screenToWorld(camera, { x: viewport.width / 2, y: viewport.height / 2 });
-}
-
 export function visibleWorldBounds(camera: Camera, viewport: ViewportSize): WorldBounds {
   const topLeft = screenToWorld(camera, { x: 0, y: 0 });
   const bottomRight = screenToWorld(camera, { x: viewport.width, y: viewport.height });

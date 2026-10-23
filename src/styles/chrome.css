@@ -743,10 +743,6 @@
     display: none;
   }
 
-  .history .icon-button:not(.help-button) {
-    display: none;
-  }
-
   .icon-button {
     width: 36px;
     height: 36px;
@@ -821,7 +817,11 @@
   }
 }
 
-@media (max-width: 430px) {
+@media (max-width: 500px) {
+  .brand__copy {
+    display: none;
+  }
+
   .add-note {
     font-size: 10.5px;
   }

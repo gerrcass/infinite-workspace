@@ -8,6 +8,8 @@ import {
   expectBoardReady,
   findEmptyPoint,
   runBoardManipulationJourney,
+  runDeleteFromCheckbox,
+  runEditingSelectionGuard,
   runEditableCardsJourney,
   runFindHintJourney,
   runNativeFindJourney,
@@ -105,6 +107,11 @@ test('paints live cards into canvas and hit-tests them at camera coordinates', a
   const accessibleNames = nodes.map((node) => node.name?.value ?? '').join(' ');
   expect(accessibleNames).toContain('The wall is real');
   expect(accessibleNames).toContain('Launch narrative');
+  const headingNames = nodes
+    .filter((node) => node.role?.value === 'heading')
+    .map((node) => node.name?.value ?? '');
+  expect(headingNames).toContain('The wall is real');
+  expect(headingNames).not.toContain('Card title');
   await cdp.detach();
 
   await viewportHasNoScrollbars(page);
@@ -285,4 +292,12 @@ test('pinch zooms around the gesture midpoint', async ({ browser }) => {
 
   expect(consoleProblems.messages).toEqual([]);
   await context.close();
+});
+
+test('does not move the camera when selecting text while editing', async ({ page }) => {
+  await runEditingSelectionGuard(page, 'Canvas');
+});
+
+test('deletes a selected card while its checkbox is focused', async ({ page }) => {
+  await runDeleteFromCheckbox(page, 'Canvas');
 });

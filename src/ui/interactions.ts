@@ -604,7 +604,7 @@ export function attachInteractions(
         break;
       case 'Delete':
       case 'Backspace':
-        if (interactive) {
+        if (isEditableTarget(target)) {
           return;
         }
         event.preventDefault();

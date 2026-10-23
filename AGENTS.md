@@ -19,10 +19,12 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # ESLint
 npm run format:check # Prettier
 npm run test         # Vitest
-npm run test:e2e     # Playwright (DOM journey by default)
+npm run test:e2e     # Playwright; builds first, then runs both enabled projects
 ```
 
-`CHROME_157_PATH=/path/to/chrome` enables the canvas Playwright project. Without it, only the DOM browser project runs.
+`CHROME_157_PATH=/path/to/chrome` enables the canvas Playwright project. Without it, only the DOM browser project runs. The e2e script builds first so a long-running preview server cannot serve stale assets.
+
+Native Ctrl/Cmd+F is verified manually in headed Chrome; Chrome does not expose its active find match to page JavaScript, so camera reveal is selection-based. Do not add a custom find UI to work around this.
 
 ## Working agreements
 

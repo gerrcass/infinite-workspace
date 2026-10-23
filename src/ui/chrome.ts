@@ -1,9 +1,10 @@
 import type { ViewportSize } from '../camera/camera';
 import type { RenderMode } from '../render/mode';
+import type { SaveStatus } from '../store/persistence';
 import type { HistoryState } from '../store/store';
 import { CARD_COLORS, type CardColor } from '../store/types';
 
-export type SaveState = 'saving' | 'saved' | 'session' | 'error';
+export type SaveState = SaveStatus;
 
 export interface ToolbarRect {
   readonly left: number;
@@ -97,6 +98,7 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   root.dataset.ui = '';
 
   const brand = el('header', 'brand');
+  brand.setAttribute('aria-label', 'Infinite Workspace');
   const brandMark = el('span', 'brand__mark');
   brandMark.setAttribute('aria-hidden', 'true');
   for (let index = 0; index < 4; index += 1) {
@@ -266,7 +268,7 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   const findCopy = el(
     'p',
     'help__copy',
-    'Press Ctrl/Cmd+F and search for needle. The browser highlights real text inside a real card — no custom search field, no painted fake. The seeded board deliberately hides the word in a few places.',
+    'Press Ctrl/Cmd+F and search for needle. The browser highlights real text inside a real card — no custom search field, no painted fake. The seeded board deliberately hides the word in a few places. Chrome’s find bar does not expose its active match to the page, so it cannot move the camera; pan to an off-screen match. A selection-based find, such as window.find(), can trigger the camera reveal.',
   );
 
   const dataHeading = el('h3', 'help__subhead', 'Board data');
@@ -299,7 +301,7 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   const supportCopy = el(
     'p',
     'help__copy',
-    'Chrome 157+ uses the canvas renderer. Modern browsers without the experimental API get the complete DOM renderer. Add ?render=dom or ?render=canvas to the URL to compare.',
+    'Chrome 157+ uses the canvas renderer. Chrome 156 can use it with chrome://flags/#canvas-draw-element; the app sets both content="drawable" and the older layoutsubtree spelling. Modern browsers without the experimental API get the complete DOM renderer. Add ?render=dom or ?render=canvas to the URL to compare.',
   );
 
   const closeRow = el('div', 'help__actions');

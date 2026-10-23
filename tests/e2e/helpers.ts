@@ -188,8 +188,8 @@ export async function runEditableCardsJourney(
 
   await expect(title).toHaveAttribute('contenteditable', /plaintext-only|true/);
   await expect(body).toHaveAttribute('contenteditable', /plaintext-only|true/);
-  await expect(title).toHaveAttribute('aria-label', 'Card title');
-  await expect(body).toHaveAttribute('aria-label', 'Card body');
+  await expect(title).toHaveAttribute('data-placeholder', 'Add a title');
+  await expect(body).toHaveAttribute('data-placeholder', 'Write something');
 
   const titleBox = await title.boundingBox();
   if (!titleBox) {
@@ -634,4 +634,36 @@ export async function runFindHintJourney(page: Page, mode: 'Canvas' | 'DOM'): Pr
   await page.reload();
   await expectBoardReady(page, mode);
   await expect(hint).toBeHidden();
+}
+
+/** Selecting text while editing must not move the camera under the caret. */
+export async function runEditingSelectionGuard(page: Page, mode: 'Canvas' | 'DOM'): Promise<void> {
+  await openBoard(page, mode);
+  const welcome = card(page, 'card-000');
+  const title = welcome.locator('.card__title');
+  const before = await cardBox(page, 'card-000');
+
+  await title.click();
+  await expect(title).toBeFocused();
+  await page.keyboard.press('Control+A');
+  await expect
+    .poll(async () => page.evaluate(() => window.getSelection()?.toString().length ?? 0))
+    .toBeGreaterThan(0);
+  await page.waitForTimeout(500);
+
+  const after = await cardBox(page, 'card-000');
+  expect(Math.abs(after.x - before.x)).toBeLessThan(2);
+  expect(Math.abs(after.y - before.y)).toBeLessThan(2);
+}
+
+/** Delete works while a checkbox is focused; only text fields block it. */
+export async function runDeleteFromCheckbox(page: Page, mode: 'Canvas' | 'DOM'): Promise<void> {
+  await openBoard(page, mode);
+  const target = card(page, 'card-001');
+  const checkbox = target.locator('input[type="checkbox"]').first();
+  await checkbox.click();
+  await expect(target).toHaveAttribute('data-selected', 'true');
+  await page.keyboard.press('Delete');
+  await expect(cards(page)).toHaveCount(215);
+  await expect(card(page, 'card-001')).toHaveCount(0);
 }
