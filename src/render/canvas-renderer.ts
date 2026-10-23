@@ -1,7 +1,7 @@
 import type { Camera, WorldBounds } from '../camera/camera';
 import { CARD_WIDTHS, type Card } from '../store/types';
 import { CardLayer } from './card-layer';
-import type { Renderer, RendererMountState, RendererOptions } from './renderer';
+import type { Renderer, RendererMountState, RendererOptions, RendererPerf } from './renderer';
 
 interface HtmlInCanvasContext extends CanvasRenderingContext2D {
   drawElementImage(
@@ -48,6 +48,12 @@ export class CanvasRenderer implements Renderer {
   private failed = false;
   private destroyed = false;
   private mounted = false;
+  private perf: RendererPerf = {
+    frames: 0,
+    totalPaintMs: 0,
+    lastPaintMs: 0,
+    drawCount: 0,
+  };
 
   constructor(private readonly options: RendererOptions) {
     this.canvas = document.createElement('canvas') as PainstableCanvas;
@@ -131,6 +137,10 @@ export class CanvasRenderer implements Renderer {
     return this.layer.getWorldBounds();
   }
 
+  getPerf(): RendererPerf {
+    return { ...this.perf };
+  }
+
   invalidate(): void {
     this.schedulePaint();
   }
@@ -211,6 +221,8 @@ export class CanvasRenderer implements Renderer {
       return;
     }
 
+    const startedAt = performance.now();
+    let drawCount = 0;
     try {
       const context = this.context;
       context.reset();
@@ -232,9 +244,18 @@ export class CanvasRenderer implements Renderer {
           CARD_WIDTHS[card.width] * zoom,
           height * zoom,
         );
+        drawCount += 1;
       }
     } catch (error) {
       this.fail(error);
+    } finally {
+      const elapsed = performance.now() - startedAt;
+      this.perf = {
+        frames: this.perf.frames + 1,
+        totalPaintMs: this.perf.totalPaintMs + elapsed,
+        lastPaintMs: elapsed,
+        drawCount,
+      };
     }
   };
 

@@ -161,13 +161,21 @@ export function fitBounds(bounds: WorldBounds, viewport: ViewportSize, padding =
  * card instead so the first screen still says something.
  */
 export function initialCamera(viewport: ViewportSize): Camera {
-  const narrow = viewport.width < 760;
+  const narrow = viewport.width < 600;
+  const medium = !narrow && viewport.width < 1100;
+
+  if (medium) {
+    // Portrait tablets need density more than a hero card: hold 0.6x on the
+    // seam between the launch wall and the welcome card so both are in frame.
+    return cameraCenteredOn({ x: 1000, y: 500 }, viewport, 0.6);
+  }
+
   const center = narrow ? NARROW_INITIAL_CENTER : INITIAL_CENTER;
   const widthLimiter = viewport.width / INITIAL_VIEW_WIDTH;
   const heightLimiter = viewport.height / INITIAL_VIEW_HEIGHT;
   const rawZoom = Math.min(widthLimiter, heightLimiter);
   const zoom = narrow
-    ? clampZoom(Math.min(1, Math.max(0.75, viewport.height / 1050)))
+    ? clampZoom(Math.min(1, Math.max(0.8, viewport.height / 1050)))
     : clampZoom(Math.min(0.95, Math.max(0.6, rawZoom)));
 
   return {
@@ -187,5 +195,51 @@ export function isFiniteCamera(camera: Camera): boolean {
     Number.isFinite(camera.y) &&
     Number.isFinite(camera.zoom) &&
     camera.zoom > 0
+  );
+}
+
+/** Breathing room kept around a native-find match when revealing it. */
+export const REVEAL_INSET = 72;
+export const REVEAL_MIN_ZOOM = 0.55;
+const REVEAL_TOP_INSET = 118;
+const REVEAL_BOTTOM_INSET = 96;
+
+/**
+ * Camera move that makes a card containing a native-find match comfortable to
+ * read. Returns null when the card is already inside the usable viewport at a
+ * readable zoom. The camera only zooms in to the reveal minimum, and zooms out
+ * when the card would not otherwise fit.
+ */
+export function revealBoundsCamera(
+  camera: Camera,
+  viewport: ViewportSize,
+  bounds: WorldBounds,
+): Camera | null {
+  const width = Math.max(1, bounds.maxX - bounds.minX);
+  const height = Math.max(1, bounds.maxY - bounds.minY);
+  const availableWidth = Math.max(1, viewport.width - REVEAL_INSET * 2);
+  const availableHeight = Math.max(1, viewport.height - REVEAL_TOP_INSET - REVEAL_BOTTOM_INSET);
+  const fitZoom = Math.min(availableWidth / width, availableHeight / height);
+  const desiredZoom = clampZoom(Math.min(Math.max(camera.zoom, REVEAL_MIN_ZOOM), fitZoom));
+
+  const left = (bounds.minX - camera.x) * camera.zoom;
+  const top = (bounds.minY - camera.y) * camera.zoom;
+  const right = (bounds.maxX - camera.x) * camera.zoom;
+  const bottom = (bounds.maxY - camera.y) * camera.zoom;
+  const alreadyVisible =
+    camera.zoom >= REVEAL_MIN_ZOOM &&
+    left >= REVEAL_INSET &&
+    right <= viewport.width - REVEAL_INSET &&
+    top >= REVEAL_TOP_INSET &&
+    bottom <= viewport.height - REVEAL_BOTTOM_INSET;
+
+  if (alreadyVisible) {
+    return null;
+  }
+
+  return cameraCenteredOn(
+    { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 },
+    viewport,
+    desiredZoom,
   );
 }

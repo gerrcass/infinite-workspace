@@ -30,7 +30,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['tests/**/*.ts', '*.config.ts', 'eslint.config.js'],
+    files: ['tests/**/*.ts', 'scripts/**/*.mjs', '*.config.ts', 'eslint.config.js'],
     languageOptions: {
       globals: { ...globals.node, ...globals.browser },
     },

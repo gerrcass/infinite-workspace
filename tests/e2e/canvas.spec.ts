@@ -9,6 +9,8 @@ import {
   findEmptyPoint,
   runBoardManipulationJourney,
   runEditableCardsJourney,
+  runFindHintJourney,
+  runNativeFindJourney,
   viewportHasNoScrollbars,
   watchConsole,
 } from './helpers';
@@ -202,4 +204,85 @@ test('reports a canvas drawing failure and continues in DOM without losing cards
   await expect(cards(page)).toHaveCount(216);
   await expect(page.getByRole('status')).toContainText('switched to the DOM renderer');
   expect(consoleProblems.messages).toEqual([]);
+});
+
+test('reveals a selected find match inside a live card', async ({ page }) => {
+  const consoleProblems = watchConsole(page);
+  await runNativeFindJourney(page, 'Canvas', consoleProblems);
+});
+
+test('shows and remembers the native-find hint', async ({ page }) => {
+  await runFindHintJourney(page, 'Canvas');
+});
+
+test('keeps canvas paint work inside the performance budget while panning', async ({ page }) => {
+  await page.goto('/?render=canvas&perf=1');
+  await expectBoardReady(page, 'Canvas');
+  const start = await findEmptyPoint(page);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  for (let step = 1; step <= 24; step += 1) {
+    await page.mouse.move(start.x - step * 18, start.y - step * 5);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(350);
+
+  const perf = await page.evaluate(() => {
+    const api = window as unknown as {
+      __infiniteWorkspacePerf?: () => {
+        frames: number;
+        totalPaintMs: number;
+        lastPaintMs: number;
+        drawCount: number;
+      } | null;
+    };
+    return api.__infiniteWorkspacePerf?.() ?? null;
+  });
+
+  expect(perf).not.toBeNull();
+  expect(perf!.frames).toBeGreaterThan(8);
+  expect(perf!.drawCount).toBe(216);
+  const average = perf!.totalPaintMs / perf!.frames;
+  console.log(`canvas paint average: ${average.toFixed(2)} ms over ${perf!.frames} frames`);
+  expect(average).toBeLessThan(16);
+});
+
+test('pinch zooms around the gesture midpoint', async ({ browser }) => {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    deviceScaleFactor: 2,
+    hasTouch: true,
+  });
+  const page = await context.newPage();
+  const consoleProblems = watchConsole(page);
+  const baseURL = test.info().project.use.baseURL ?? 'http://127.0.0.1:4173';
+  await page.goto(`${baseURL}/?render=canvas`);
+  await expectBoardReady(page, 'Canvas');
+  const hint = page.locator('[data-testid="find-hint"]');
+  if (await hint.isVisible().catch(() => false)) {
+    await hint.getByRole('button', { name: 'Dismiss find tip' }).click();
+  }
+  const before = await currentZoom(page);
+
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [
+      { x: 500, y: 650, id: 1 },
+      { x: 700, y: 650, id: 2 },
+    ],
+  });
+  await page.waitForTimeout(60);
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchMove',
+    touchPoints: [
+      { x: 440, y: 650, id: 1 },
+      { x: 760, y: 650, id: 2 },
+    ],
+  });
+  await expect.poll(async () => currentZoom(page)).toBeGreaterThan(before);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+
+  expect(consoleProblems.messages).toEqual([]);
+  await context.close();
 });

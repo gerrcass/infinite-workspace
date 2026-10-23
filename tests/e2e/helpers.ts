@@ -553,3 +553,85 @@ export async function expectAllCardsInViewport(page: Page): Promise<void> {
 
   expect(outside).toEqual([]);
 }
+
+/**
+ * The headline journey: a find selection reaches real card text, the highlight is
+ * painted into the card, and the camera brings an off-screen match into view.
+ */
+export async function runNativeFindJourney(
+  page: Page,
+  mode: 'Canvas' | 'DOM',
+  consoleProblems: ConsoleProblems,
+): Promise<void> {
+  await openBoard(page, mode);
+
+  const needleCard = page.locator('.card', { hasText: 'The needle in the interviews' });
+  await expect(needleCard).toHaveCount(1);
+  const before = await needleCard.boundingBox();
+  if (!before) {
+    throw new Error('Needle card has no box before find');
+  }
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error('Viewport is missing');
+  }
+  expect(before.x).toBeGreaterThan(viewport.width);
+
+  const found = await page.evaluate(() => {
+    const api = window as unknown as {
+      find(
+        text: string,
+        caseSensitive?: boolean,
+        backwards?: boolean,
+        wrapAround?: boolean,
+        wholeWord?: boolean,
+        searchInFrames?: boolean,
+        showDialog?: boolean,
+      ): boolean;
+    };
+    return api.find('The needle in the interviews', false, false, true, false, false, false);
+  });
+  expect(found).toBe(true);
+  await expect
+    .poll(async () => page.evaluate(() => window.getSelection()?.toString() ?? ''))
+    .toContain('The needle in the interviews');
+
+  await expect
+    .poll(async () => {
+      const box = await needleCard.boundingBox();
+      if (!box) {
+        return false;
+      }
+      return (
+        box.x >= 0 &&
+        box.y >= 0 &&
+        box.x + box.width <= viewport.width &&
+        box.y + box.height <= viewport.height
+      );
+    })
+    .toBe(true);
+
+  const title = needleCard.locator('.card__title');
+  await expect(title).toHaveAttribute('contenteditable', /plaintext-only|true/);
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected).toContain('needle');
+
+  if (mode === 'Canvas') {
+    await expect(page.locator('canvas > .card[drawable]')).toHaveCount(216);
+  }
+  expect(consoleProblems.messages).toEqual([]);
+}
+
+/** The first-run tip is dismissible and stays dismissed across reloads. */
+export async function runFindHintJourney(page: Page, mode: 'Canvas' | 'DOM'): Promise<void> {
+  await openBoard(page, mode);
+  const hint = page.locator('[data-testid="find-hint"]');
+  await expect(hint).toBeVisible();
+  await expect(hint).toContainText('needle');
+  await hint.getByRole('button', { name: 'Dismiss find tip' }).click();
+  await expect(hint).toBeHidden();
+
+  await page.reload();
+  await expectBoardReady(page, mode);
+  await expect(hint).toBeHidden();
+}

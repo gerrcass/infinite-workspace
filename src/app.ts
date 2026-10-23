@@ -2,19 +2,26 @@ import {
   editingAssistCamera,
   fitBounds,
   initialCamera,
+  revealBoundsCamera,
   screenToWorld,
   zoomAtCenter,
   type Camera,
   type ViewportSize,
+  type WorldBounds,
 } from './camera/camera';
 import { createSeed } from './store/seed';
-import { BoardPersistence, loadBoard, type SaveStatus } from './store/persistence';
+import {
+  BoardPersistence,
+  loadBoard,
+  type SaveStatus,
+  type StoragePort,
+} from './store/persistence';
 import { BoardStore, type StoreEvent } from './store/store';
 import { CARD_WIDTHS, type Card, type CardColor } from './store/types';
 import { CanvasRenderer, detectCanvasSupport } from './render/canvas-renderer';
 import { DomRenderer } from './render/dom-renderer';
 import { parseRenderModeParam, resolveRenderMode, type RenderMode } from './render/mode';
-import type { Renderer } from './render/renderer';
+import type { Renderer, RendererPerf } from './render/renderer';
 import type { CardViewHandlers } from './ui/card-view';
 import { createChrome, type Chrome } from './ui/chrome';
 import { attachInteractions } from './ui/interactions';
@@ -25,6 +32,8 @@ const MAJOR_GRID_WORLD = 100;
 const FIT_PADDING = 90;
 const MAX_CARDS = 500;
 const ADD_OFFSET = 24;
+const HINT_DISMISSED_KEY = 'infinite-workspace:find-hint-dismissed:v1';
+const REVEAL_DURATION_MS = 280;
 
 const SAVE_LABELS: Record<SaveStatus, string> = {
   saving: 'Saving',
@@ -67,6 +76,10 @@ function newCardId(): string {
   return `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+type PerfWindow = Window & {
+  __infiniteWorkspacePerf?: () => RendererPerf | null;
+};
+
 function isTextField(element: Element | null): boolean {
   if (!(element instanceof HTMLElement)) {
     return false;
@@ -97,11 +110,13 @@ export class App {
   private readonly chrome: Chrome;
   private readonly persistence: BoardPersistence;
   private readonly hasStorage: boolean;
+  private readonly storagePort: StoragePort | null;
   private readonly cardHandlers: CardViewHandlers;
   private renderer: Renderer;
   private detachInteractions: (() => void) | null = null;
   private unsubscribe: (() => void) | null = null;
   private cameraFrame = 0;
+  private hintTimer = 0;
   private suppressPersistence = false;
   private destroyed = false;
   private viewport: ViewportSize;
@@ -109,12 +124,12 @@ export class App {
   private readonly requestedMode = parseRenderModeParam(
     new URLSearchParams(window.location.search).get('render'),
   );
+  private readonly perfEnabled = new URLSearchParams(window.location.search).get('perf') === '1';
 
   constructor(private readonly root: HTMLElement) {
     this.root.replaceChildren();
     this.board = element('main', 'board');
     this.board.id = 'board';
-    this.board.tabIndex = 0;
     this.board.setAttribute('aria-label', 'Infinite Workspace board');
     this.board.setAttribute('aria-describedby', 'board-instructions');
 
@@ -128,13 +143,20 @@ export class App {
 
     this.scene = element('div', 'scene');
     this.scene.dataset.testid = 'scene';
+    this.scene.id = 'board-wall';
+    this.scene.tabIndex = -1;
+    this.scene.setAttribute('aria-label', 'Card wall');
 
-    this.board.append(this.grid, this.scene, instructions);
+    const skipLink = element('a', 'skip-link', 'Skip to the card wall');
+    skipLink.href = '#board-wall';
+
+    this.board.append(skipLink, this.grid, this.scene, instructions);
     this.root.append(this.board);
 
     this.viewport = this.measureViewport();
     const storage = openBrowserStorage();
     this.hasStorage = storage.port !== null;
+    this.storagePort = storage.port;
     const seed = createSeed();
     const openingCamera = initialCamera(this.viewport);
     let board = seed;
@@ -201,6 +223,10 @@ export class App {
       camera: snapshot.camera,
       selectedId: snapshot.selectedId,
     });
+
+    if (this.perfEnabled) {
+      (window as PerfWindow).__infiniteWorkspacePerf = () => this.renderer.getPerf?.() ?? null;
+    }
 
     this.chrome.setRenderer(
       this.renderer.kind,
@@ -278,6 +304,8 @@ export class App {
 
     window.addEventListener('resize', this.handleResize);
     window.addEventListener('pagehide', this.handlePageHide);
+    document.addEventListener('selectionchange', this.handleSelectionChange);
+    this.scheduleFindHint();
 
     if (!this.capabilities.canvas) {
       window.setTimeout(() => {
@@ -296,6 +324,7 @@ export class App {
   destroy(): void {
     this.destroyed = true;
     this.cancelCameraAnimation();
+    window.clearTimeout(this.hintTimer);
     this.persistence.flush();
     this.persistence.stop();
     this.detachInteractions?.();
@@ -304,6 +333,10 @@ export class App {
     this.chrome.destroy();
     window.removeEventListener('resize', this.handleResize);
     window.removeEventListener('pagehide', this.handlePageHide);
+    document.removeEventListener('selectionchange', this.handleSelectionChange);
+    if (this.perfEnabled) {
+      delete (window as PerfWindow).__infiniteWorkspacePerf;
+    }
     this.board.remove();
   }
 
@@ -417,6 +450,81 @@ export class App {
     this.renderer.invalidate();
     this.updateSelectionToolbar();
   };
+
+  /**
+   * Native find (and a text selection that is not being edited) should bring
+   * its card into comfortable view. Browser find highlights are painted into
+   * the card snapshot; this only moves the camera.
+   */
+  private readonly handleSelectionChange = (): void => {
+    if (this.destroyed) {
+      return;
+    }
+
+    const selection = document.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return;
+    }
+
+    const anchor = selection.anchorNode;
+    const anchorElement = anchor instanceof Element ? anchor : anchor?.parentElement;
+    const cardElement = anchorElement?.closest<HTMLElement>('[data-card-id]');
+    if (!cardElement) {
+      return;
+    }
+
+    // Collapsed carets are ordinary editing. A non-collapsed selection is a
+    // find match or a deliberate text selection; reveal it only when its card
+    // is not already comfortably visible, so editing in view never moves.
+    const cardId = cardElement.dataset.cardId;
+    if (!cardId) {
+      return;
+    }
+    const card = this.store.getCard(cardId);
+    const element = this.renderer.getCardElement(cardId);
+    if (!card || !element) {
+      return;
+    }
+
+    const bounds: WorldBounds = {
+      minX: card.x,
+      minY: card.y,
+      maxX: card.x + CARD_WIDTHS[card.width],
+      maxY: card.y + Math.max(1, element.offsetHeight),
+    };
+    const target = revealBoundsCamera(this.store.getCamera(), this.viewport, bounds);
+    if (!target) {
+      return;
+    }
+
+    this.store.select(cardId);
+    this.animateCamera(target, REVEAL_DURATION_MS);
+  };
+
+  private scheduleFindHint(): void {
+    let dismissed = false;
+    try {
+      dismissed = this.storagePort?.getItem(HINT_DISMISSED_KEY) === '1';
+    } catch {
+      // Storage denied: still show the tip for this session.
+    }
+    if (dismissed) {
+      return;
+    }
+
+    this.hintTimer = window.setTimeout(() => {
+      if (this.destroyed) {
+        return;
+      }
+      this.chrome.showHint(() => {
+        try {
+          this.storagePort?.setItem(HINT_DISMISSED_KEY, '1');
+        } catch {
+          // A dismissed hint is still dismissed for this session.
+        }
+      });
+    }, 1200);
+  }
 
   private readonly handlePageHide = (): void => {
     this.persistence.flush();

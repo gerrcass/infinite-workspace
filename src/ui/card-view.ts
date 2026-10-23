@@ -123,7 +123,10 @@ function attachPlainTextPaste(element: HTMLElement, normalize: (value: string) =
 export function createCardView(card: Card, handlers: CardViewHandlers): CardView {
   const element = makeElement('article', 'card');
   element.dataset.cardId = card.id;
-  element.tabIndex = 0;
+  // Cards are programmatically focusable for selection, but the editable
+  // fields are the meaningful tab stops. 216 dead article stops would make the
+  // board hostile to keyboard users.
+  element.tabIndex = -1;
 
   const meta = makeElement('header', 'card__meta');
   meta.dataset.dragStrip = '';

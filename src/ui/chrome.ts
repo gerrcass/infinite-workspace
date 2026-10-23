@@ -42,6 +42,7 @@ export interface Chrome {
   setHistoryState(state: HistoryState): void;
   updateSelectionToolbar(selection: SelectionToolbarState | null): void;
   showToast(message: string, durationMs?: number): void;
+  showHint(onDismiss: () => void): void;
   openHelp(): void;
   destroy(): void;
 }
@@ -168,6 +169,21 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   toast.setAttribute('role', 'status');
   toast.setAttribute('aria-live', 'polite');
   toast.hidden = true;
+
+  const hint = el('aside', 'find-hint');
+  hint.dataset.testid = 'find-hint';
+  hint.hidden = true;
+  hint.setAttribute('role', 'note');
+  hint.setAttribute('aria-label', 'Native find tip');
+  const hintCopy = el('p', 'find-hint__copy', 'Every card is real text. Press ');
+  hintCopy.append(
+    el('kbd', 'find-hint__key', 'Ctrl/Cmd+F'),
+    document.createTextNode(' and search for '),
+    el('mark', 'find-hint__needle', 'needle'),
+    document.createTextNode('.'),
+  );
+  const hintDismiss = button('find-hint__dismiss', 'Dismiss find tip', 'Got it');
+  hint.append(hintCopy, hintDismiss);
 
   const selectionToolbar = el('div', 'selection-toolbar');
   selectionToolbar.hidden = true;
@@ -309,11 +325,12 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   );
   dialog.append(helpInner);
 
-  root.append(brand, history, status, zoom, toast, dialog, selectionToolbar);
+  root.append(brand, history, status, zoom, toast, hint, dialog, selectionToolbar);
 
   let toastTimer: number | undefined;
   let lastFocused: HTMLElement | null = null;
   let pendingDataAction: 'reset' | 'clear' | null = null;
+  let hintDismissCallback: (() => void) | null = null;
 
   const resetConfirm = (): void => {
     pendingDataAction = null;
@@ -374,6 +391,12 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
   helpButton.addEventListener('click', openHelp);
   close.addEventListener('click', closeHelp);
   closeButton.addEventListener('click', closeHelp);
+  hintDismiss.addEventListener('click', () => {
+    hint.hidden = true;
+    const dismiss = hintDismissCallback;
+    hintDismissCallback = null;
+    dismiss?.();
+  });
   dialog.addEventListener('close', () => {
     resetConfirm();
     const target = lastFocused?.isConnected ? lastFocused : helpButton;
@@ -457,6 +480,11 @@ export function createChrome(handlers: ChromeHandlers): Chrome {
         toast.hidden = true;
         toastTimer = undefined;
       }, durationMs);
+    },
+    showHint(onDismiss: () => void): void {
+      hintDismissCallback = onDismiss;
+      hint.hidden = false;
+      hint.classList.add('is-visible');
     },
     openHelp,
     destroy(): void {

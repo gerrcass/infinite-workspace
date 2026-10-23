@@ -12,6 +12,8 @@ import {
   rendererBadge,
   runBoardManipulationJourney,
   runEditableCardsJourney,
+  runFindHintJourney,
+  runNativeFindJourney,
   selectedCard,
   selectionToolbar,
   viewportHasNoScrollbars,
@@ -63,7 +65,7 @@ test('loads the seeded wall in DOM mode with complete chrome', async ({ page }) 
   const addButton = page.getByRole('button', { name: 'Add note at the centre of the view' });
   await expect(addButton).toBeVisible();
   await page.keyboard.press('Tab');
-  await expect(page.locator('.board')).toBeFocused();
+  await expect(page.getByRole('link', { name: 'Skip to the card wall' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(addButton).toBeFocused();
   const helpButton = page.getByRole('button', { name: 'Help and shortcuts' });
@@ -237,4 +239,13 @@ test('pans, zooms, fits, and selects without remounting cards', async ({ page })
   );
   await expect(zoomLevel(page)).toHaveText('100%');
   expect(consoleProblems.messages).toEqual([]);
+});
+
+test('reveals a selected find match inside a live card', async ({ page }) => {
+  const consoleProblems = watchConsole(page);
+  await runNativeFindJourney(page, 'DOM', consoleProblems);
+});
+
+test('shows and remembers the native-find hint', async ({ page }) => {
+  await runFindHintJourney(page, 'DOM');
 });

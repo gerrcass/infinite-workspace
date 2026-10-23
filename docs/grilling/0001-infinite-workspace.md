@@ -67,9 +67,9 @@ What can the user actually edit inside a card?
 
 ### ❓ Q7 — How does native find-in-page stay the headline feature?
 
-**Recommendation:** Do not implement a custom find UI and do not intercept Ctrl/Cmd+F. Keep every card in the real DOM at all times. Listen for `selectionchange`; when a match is selected outside the viewport, pan/zoom the camera to reveal its card. The browser paints the native highlight; our paint loop redraws it. Add a first-run hint that says Ctrl/Cmd+F works, and include deliberate "needle" phrases in the seed so it is easy to try.
+**Recommendation:** Do not implement a custom find UI and do not intercept Ctrl/Cmd+F. Keep every card in the real DOM at all times. Listen for `selectionchange`; when a selection-based match is outside the viewport, pan/zoom the camera to reveal its card. The browser paints the native highlight into the card snapshot; our paint loop redraws it. Add a first-run hint that says Ctrl/Cmd+F works, and include deliberate "needle" phrases in the seed so it is easy to try.
 
-**Decision:** As recommended. Native find only, plus camera reveal on selection. No custom find palette.
+**Decision:** As recommended. Native find only, plus camera reveal for selections. A Chrome 157 headed-browser check during implementation showed the native find bar finds and highlights real card text inside the canvas. Chrome's native find bar does not expose its active match as a DOM selection, so the camera reveal applies to selection-based find (`window.find`, browser or platform variants that expose a selection); native matches on other parts of the board remain searchable and are revealed by panning. This limitation is stated honestly in the README rather than papered over with a custom find field.
 
 ### ❓ Q8 — What are the core shortcuts?
 

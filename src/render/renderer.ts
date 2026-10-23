@@ -18,6 +18,13 @@ export interface RendererOptions {
   readonly onRuntimeError?: (error: unknown) => void;
 }
 
+export interface RendererPerf {
+  readonly frames: number;
+  readonly totalPaintMs: number;
+  readonly lastPaintMs: number;
+  readonly drawCount: number;
+}
+
 /**
  * The only surface the app knows about. Both renderers implement it, and all
  * HTML-in-Canvas API contact stays inside the canvas renderer.
@@ -31,6 +38,7 @@ export interface Renderer {
   setSelection(selectedId: string | null): void;
   getCardElement(id: string): HTMLElement | null;
   getWorldBounds(): WorldBounds | null;
+  getPerf?(): RendererPerf | null;
   invalidate(): void;
   destroy(): void;
 }

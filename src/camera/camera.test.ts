@@ -3,9 +3,11 @@ import {
   EDIT_ASSIST_ZOOM,
   MAX_ZOOM,
   MIN_ZOOM,
+  REVEAL_MIN_ZOOM,
   cameraCenteredOn,
   clampZoom,
   editingAssistCamera,
+  revealBoundsCamera,
   fitBounds,
   initialCamera,
   panBy,
@@ -157,5 +159,35 @@ describe('camera', () => {
     expect(narrow.zoom).toBeGreaterThanOrEqual(0.75);
     expect(narrow.zoom).toBeLessThanOrEqual(1);
     expect(Number.isFinite(narrow.x)).toBe(true);
+
+    const medium = initialCamera({ width: 820, height: 1100 });
+    expect(medium.zoom).toBe(0.6);
+    expect(Number.isFinite(medium.x)).toBe(true);
+  });
+});
+
+describe('revealBoundsCamera', () => {
+  const viewport = { width: 1440, height: 900 };
+  const bounds = { minX: 4000, minY: 3000, maxX: 4260, maxY: 3160 };
+
+  it('returns a camera that centres an off-screen card and raises zoom to readable', () => {
+    const camera = { x: 0, y: 0, zoom: 0.4 };
+    const target = revealBoundsCamera(camera, viewport, bounds);
+    expect(target).not.toBeNull();
+    expect(target!.zoom).toBeGreaterThanOrEqual(REVEAL_MIN_ZOOM);
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    expect(target!.x + viewport.width / (2 * target!.zoom)).toBeCloseTo(centerX, 5);
+  });
+
+  it('does not move when the card is already comfortably visible', () => {
+    const camera = revealBoundsCamera({ x: 0, y: 0, zoom: 0.4 }, viewport, bounds)!;
+    expect(revealBoundsCamera(camera, viewport, bounds)).toBeNull();
+  });
+
+  it('zooms out when a tall card cannot fit at the current zoom', () => {
+    const tall = { minX: 0, minY: 0, maxX: 280, maxY: 3000 };
+    const target = revealBoundsCamera({ x: 0, y: 0, zoom: 2 }, viewport, tall)!;
+    expect(target.zoom).toBeLessThan(2);
+    expect(target.zoom * 3000).toBeLessThanOrEqual(viewport.height);
   });
 });

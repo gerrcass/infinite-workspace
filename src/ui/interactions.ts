@@ -1,4 +1,12 @@
-import { panBy, zoomAt, type Camera, type Point, type ViewportSize } from '../camera/camera';
+import {
+  clampZoom,
+  panBy,
+  screenToWorld,
+  zoomAt,
+  type Camera,
+  type Point,
+  type ViewportSize,
+} from '../camera/camera';
 
 export interface DragOrigin {
   readonly x: number;
@@ -32,6 +40,15 @@ interface PanSession {
   readonly pointerId: number;
   lastX: number;
   lastY: number;
+  lastTime: number;
+  velocityX: number;
+  velocityY: number;
+}
+
+interface PinchSession {
+  readonly startCamera: Camera;
+  readonly startMidpoint: Point;
+  readonly startDistance: number;
 }
 
 interface CardDragSession {
@@ -48,6 +65,20 @@ const WHEEL_ZOOM_SPEED = 0.0022;
 const DRAG_THRESHOLD = 3;
 const ARROW_PAN = 80;
 const ARROW_PAN_FAST = 240;
+const INERTIA_MIN_SPEED = 0.08;
+const INERTIA_DECAY = 0.93;
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function midpoint(first: Point, second: Point): Point {
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+function distance(first: Point, second: Point): number {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
 
 function isTextInput(target: HTMLElement): boolean {
   if (target instanceof HTMLTextAreaElement) {
@@ -100,19 +131,101 @@ export function attachInteractions(
 ): () => void {
   let pan: PanSession | null = null;
   let cardDrag: CardDragSession | null = null;
+  let pinch: PinchSession | null = null;
   let spaceHeld = false;
   let suppressClick = false;
+  let inertiaFrame = 0;
+  let inertiaX = 0;
+  let inertiaY = 0;
+  const touchPointers = new Map<number, Point>();
 
   const localPoint = (event: MouseEvent | WheelEvent): Point => {
     const rect = surface.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
+  const stopInertia = (): void => {
+    if (inertiaFrame !== 0) {
+      cancelAnimationFrame(inertiaFrame);
+      inertiaFrame = 0;
+    }
+    inertiaX = 0;
+    inertiaY = 0;
+  };
+
+  const startInertia = (velocityX: number, velocityY: number): void => {
+    if (prefersReducedMotion() || Math.hypot(velocityX, velocityY) < INERTIA_MIN_SPEED) {
+      return;
+    }
+
+    stopInertia();
+    inertiaX = velocityX;
+    inertiaY = velocityY;
+    let last = performance.now();
+
+    const frame = (now: number): void => {
+      const dt = Math.min(32, Math.max(1, now - last));
+      last = now;
+      const decay = Math.pow(INERTIA_DECAY, dt / 16.67);
+      inertiaX *= decay;
+      inertiaY *= decay;
+      handlers.onCamera(panBy(handlers.getCamera(), inertiaX * dt, inertiaY * dt));
+
+      if (Math.hypot(inertiaX, inertiaY) > INERTIA_MIN_SPEED * 0.35) {
+        inertiaFrame = requestAnimationFrame(frame);
+      } else {
+        inertiaFrame = 0;
+      }
+    };
+
+    inertiaFrame = requestAnimationFrame(frame);
+  };
+
+  const beginPinch = (): void => {
+    const points = [...touchPointers.values()];
+    const first = points[0];
+    const second = points[1];
+    if (!first || !second) {
+      return;
+    }
+
+    stopInertia();
+    if (cardDrag) {
+      const moved = cardDrag.moved;
+      cardDrag = null;
+      handlers.onCardDragEnd(moved);
+      surface.classList.remove('is-card-dragging');
+    }
+    if (pan) {
+      pan = null;
+      surface.classList.remove('is-panning');
+    }
+    pinch = {
+      startCamera: handlers.getCamera(),
+      startMidpoint: midpoint(first, second),
+      startDistance: Math.max(1, distance(first, second)),
+    };
+    surface.classList.add('is-pinching');
+  };
+
+  const endPinch = (): void => {
+    if (!pinch) {
+      return;
+    }
+    pinch = null;
+    surface.classList.remove('is-pinching');
+    suppressClick = true;
+  };
+
   const startPan = (event: PointerEvent): void => {
+    const now = performance.now();
     pan = {
       pointerId: event.pointerId,
       lastX: event.clientX,
       lastY: event.clientY,
+      lastTime: now,
+      velocityX: 0,
+      velocityY: 0,
     };
     surface.setPointerCapture(event.pointerId);
     surface.classList.add('is-panning');
@@ -127,9 +240,23 @@ export function attachInteractions(
       return;
     }
 
+    stopInertia();
+
     const target = event.target instanceof Element ? event.target : null;
     if (!target || target.closest('.chrome')) {
       return;
+    }
+
+    if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+      touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touchPointers.size === 2) {
+        beginPinch();
+        event.preventDefault();
+        return;
+      }
+      if (pinch) {
+        return;
+      }
     }
 
     if (cardDrag || pan) {
@@ -190,6 +317,42 @@ export function attachInteractions(
   };
 
   const onPointerMove = (event: PointerEvent): void => {
+    if (
+      (event.pointerType === 'touch' || event.pointerType === 'pen') &&
+      touchPointers.has(event.pointerId)
+    ) {
+      touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    if (pinch && touchPointers.size >= 2) {
+      const points = [...touchPointers.values()];
+      const first = points[0];
+      const second = points[1];
+      if (!first || !second) {
+        return;
+      }
+      const rect = surface.getBoundingClientRect();
+      const currentMidpoint = midpoint(first, second);
+      const localMidpoint = {
+        x: currentMidpoint.x - rect.left,
+        y: currentMidpoint.y - rect.top,
+      };
+      const startLocalMidpoint = {
+        x: pinch.startMidpoint.x - rect.left,
+        y: pinch.startMidpoint.y - rect.top,
+      };
+      const scale = distance(first, second) / pinch.startDistance;
+      const zoom = clampZoom(pinch.startCamera.zoom * scale);
+      const anchor = screenToWorld(pinch.startCamera, startLocalMidpoint);
+      handlers.onCamera({
+        x: anchor.x - localMidpoint.x / zoom,
+        y: anchor.y - localMidpoint.y / zoom,
+        zoom,
+      });
+      event.preventDefault();
+      return;
+    }
+
     if (cardDrag && cardDrag.pointerId === event.pointerId) {
       const dx = event.clientX - cardDrag.startX;
       const dy = event.clientY - cardDrag.startY;
@@ -210,10 +373,16 @@ export function attachInteractions(
       return;
     }
 
+    const now = performance.now();
+    const dt = Math.max(1, now - pan.lastTime);
     const dx = event.clientX - pan.lastX;
     const dy = event.clientY - pan.lastY;
     pan.lastX = event.clientX;
     pan.lastY = event.clientY;
+    pan.lastTime = now;
+    // Smoothed screen-space velocity in px/ms for the inertia tail.
+    pan.velocityX = pan.velocityX * 0.7 + (dx / dt) * 0.3;
+    pan.velocityY = pan.velocityY * 0.7 + (dy / dt) * 0.3;
 
     if (dx !== 0 || dy !== 0) {
       handlers.onCamera(panBy(handlers.getCamera(), dx, dy));
@@ -221,6 +390,33 @@ export function attachInteractions(
   };
 
   const endGesture = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch' || event.pointerType === 'pen') {
+      touchPointers.delete(event.pointerId);
+      if (pinch) {
+        if (surface.hasPointerCapture(event.pointerId)) {
+          surface.releasePointerCapture(event.pointerId);
+        }
+        if (touchPointers.size < 2) {
+          endPinch();
+        }
+        if (touchPointers.size === 1) {
+          const remaining = [...touchPointers.entries()][0];
+          if (remaining) {
+            const [pointerId, point] = remaining;
+            pan = {
+              pointerId,
+              lastX: point.x,
+              lastY: point.y,
+              lastTime: performance.now(),
+              velocityX: 0,
+              velocityY: 0,
+            };
+          }
+        }
+        return;
+      }
+    }
+
     if (cardDrag && cardDrag.pointerId === event.pointerId) {
       const moved = cardDrag.moved;
       cardDrag = null;
@@ -236,11 +432,14 @@ export function attachInteractions(
     if (!pan || pan.pointerId !== event.pointerId) {
       return;
     }
+    const velocityX = pan.velocityX;
+    const velocityY = pan.velocityY;
     pan = null;
     surface.classList.remove('is-panning');
     if (surface.hasPointerCapture(event.pointerId)) {
       surface.releasePointerCapture(event.pointerId);
     }
+    startInertia(velocityX, velocityY);
   };
 
   const onClick = (event: MouseEvent): void => {
@@ -281,6 +480,7 @@ export function attachInteractions(
       return;
     }
 
+    stopInertia();
     event.preventDefault();
     const camera = handlers.getCamera();
     const viewport = handlers.getViewport();
@@ -308,6 +508,7 @@ export function attachInteractions(
     if (document.querySelector('dialog[open]')) {
       return;
     }
+    stopInertia();
 
     const target = event.target;
     if (event.key === 'Escape' && target instanceof HTMLElement && isEditableTarget(target)) {
@@ -478,6 +679,9 @@ export function attachInteractions(
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
     window.removeEventListener('blur', onWindowBlur);
-    surface.classList.remove('is-panning', 'is-card-dragging');
+    stopInertia();
+    touchPointers.clear();
+    pinch = null;
+    surface.classList.remove('is-panning', 'is-card-dragging', 'is-pinching');
   };
 }
