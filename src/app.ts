@@ -1,4 +1,5 @@
 import {
+  editingAssistCamera,
   fitBounds,
   initialCamera,
   screenToWorld,
@@ -13,6 +14,7 @@ import { CanvasRenderer, detectCanvasSupport } from './render/canvas-renderer';
 import { DomRenderer } from './render/dom-renderer';
 import { parseRenderModeParam, resolveRenderMode, type RenderMode } from './render/mode';
 import type { Renderer } from './render/renderer';
+import type { CardViewHandlers } from './ui/card-view';
 import { createChrome, type Chrome } from './ui/chrome';
 import { attachInteractions } from './ui/interactions';
 
@@ -70,6 +72,7 @@ export class App {
   private cameraFrame = 0;
   private destroyed = false;
   private viewport: ViewportSize;
+  private readonly cardHandlers: CardViewHandlers;
   private readonly capabilities = { canvas: detectCanvasSupport() };
   private readonly requestedMode = parseRenderModeParam(
     new URLSearchParams(window.location.search).get('render'),
@@ -100,6 +103,21 @@ export class App {
     this.viewport = this.measureViewport();
     const seed = createSeed();
     this.store = new BoardStore(seed, initialCamera(this.viewport));
+    this.cardHandlers = {
+      updateCardText: (cardId, field, text) => {
+        this.store.updateCardText(cardId, field, text);
+      },
+      updateChecklistText: (cardId, itemId, text) => {
+        this.store.updateChecklistItemText(cardId, itemId, text);
+      },
+      toggleChecklistItem: (cardId, itemId, done) => {
+        this.store.toggleChecklistItem(cardId, itemId, done);
+      },
+      addChecklistItem: (cardId) => this.store.addChecklistItem(cardId)?.id ?? null,
+      removeChecklistItem: (cardId, itemId) => {
+        this.store.removeChecklistItem(cardId, itemId);
+      },
+    };
 
     this.chrome = createChrome({
       onAddNote: () => this.addNote(),
@@ -149,6 +167,13 @@ export class App {
       onResetZoom: () => this.resetZoom(),
       onFit: () => this.fitBoard(),
       onHelp: () => this.chrome.openHelp(),
+      onEditableFocus: (cardId) => {
+        this.store.select(cardId);
+        this.assistEditing(cardId);
+      },
+      onEditableBlur: () => {
+        // Text-session history arrives with board manipulation.
+      },
     });
 
     this.unsubscribe = this.store.subscribe((event) => {
@@ -198,6 +223,7 @@ export class App {
       try {
         return new CanvasRenderer({
           container: this.scene,
+          cardHandlers: this.cardHandlers,
           onRuntimeError: (error) => this.handleCanvasFailure(error),
         });
       } catch (error) {
@@ -208,7 +234,32 @@ export class App {
       }
     }
 
-    return new DomRenderer({ container: this.scene });
+    return new DomRenderer({ container: this.scene, cardHandlers: this.cardHandlers });
+  }
+
+  /**
+   * When text is focused at a very low zoom, ease the camera to a comfortable
+   * scale around the card. The field keeps focus and native selection.
+   */
+  private assistEditing(cardId: string): void {
+    const camera = this.store.getCamera();
+    if (camera.zoom >= 0.7) {
+      return;
+    }
+    const element = this.renderer.getCardElement(cardId);
+    if (!element) {
+      return;
+    }
+    const cardRect = element.getBoundingClientRect();
+    const boardRect = this.board.getBoundingClientRect();
+    const worldCenter = screenToWorld(camera, {
+      x: cardRect.left - boardRect.left + cardRect.width / 2,
+      y: cardRect.top - boardRect.top + cardRect.height / 2,
+    });
+    const target = editingAssistCamera(camera, this.viewport, worldCenter);
+    if (target) {
+      this.animateCamera(target, 240);
+    }
   }
 
   private handleCanvasFailure(error: unknown): void {
@@ -219,7 +270,10 @@ export class App {
 
       const snapshot = this.store.getSnapshot();
       this.renderer.destroy();
-      this.renderer = new DomRenderer({ container: this.scene });
+      this.renderer = new DomRenderer({
+        container: this.scene,
+        cardHandlers: this.cardHandlers,
+      });
       this.renderer.mount({
         cards: snapshot.cards,
         camera: snapshot.camera,

@@ -87,6 +87,38 @@ export function zoomAtCenter(
   return zoomAt(camera, { x: viewport.width / 2, y: viewport.height / 2 }, requestedZoom);
 }
 
+export const EDIT_ASSIST_BELOW_ZOOM = 0.7;
+export const EDIT_ASSIST_ZOOM = 0.85;
+
+/** Centre the viewport on a world point at an exact, clamped zoom. */
+export function cameraCenteredOn(
+  worldPoint: Point,
+  viewport: ViewportSize,
+  requestedZoom: number,
+): Camera {
+  const zoom = clampZoom(requestedZoom);
+  return {
+    x: worldPoint.x - viewport.width / (2 * zoom),
+    y: worldPoint.y - viewport.height / (2 * zoom),
+    zoom,
+  };
+}
+
+/**
+ * A one-shot camera assist for editing text. Below the comfort threshold the
+ * view eases to at least 0.85x around the card; otherwise nothing changes.
+ */
+export function editingAssistCamera(
+  camera: Camera,
+  viewport: ViewportSize,
+  worldCenter: Point,
+): Camera | null {
+  if (camera.zoom >= EDIT_ASSIST_BELOW_ZOOM) {
+    return null;
+  }
+  return cameraCenteredOn(worldCenter, viewport, Math.max(camera.zoom, EDIT_ASSIST_ZOOM));
+}
+
 export function cameraCenterWorld(camera: Camera, viewport: ViewportSize): Point {
   return screenToWorld(camera, { x: viewport.width / 2, y: viewport.height / 2 });
 }

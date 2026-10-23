@@ -1,6 +1,6 @@
 import type { Camera } from '../camera/camera';
 import { clampZoom, isFiniteCamera } from '../camera/camera';
-import type { Board, Card } from './types';
+import type { Board, Card, ChecklistItem } from './types';
 
 export type StoreEvent =
   | { readonly type: 'camera'; readonly camera: Camera }
@@ -9,6 +9,22 @@ export type StoreEvent =
   | { readonly type: 'selection'; readonly selectedId: string | null };
 
 export type StoreListener = (event: StoreEvent) => void;
+
+function randomToken(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createChecklistItemId(cardId: string, checklist: readonly ChecklistItem[]): string {
+  const existing = new Set(checklist.map((item) => item.id));
+  let id = `${cardId}-check-${randomToken()}`;
+  while (existing.has(id)) {
+    id = `${cardId}-check-${randomToken()}`;
+  }
+  return id;
+}
 
 export interface StoreSnapshot {
   readonly cards: readonly Card[];
@@ -104,6 +120,67 @@ export class BoardStore {
     this.emit({ type: 'cards', cards: this.cards });
   }
 
+  updateCardText(id: string, field: 'title' | 'body', text: string): Card | null {
+    const current = this.getCard(id);
+    if (!current || current[field] === text) {
+      return current ?? null;
+    }
+    return this.updateCard(id, field === 'title' ? { title: text } : { body: text });
+  }
+
+  updateChecklistItemText(cardId: string, itemId: string, text: string): Card | null {
+    const current = this.getCard(cardId);
+    if (!current) {
+      return null;
+    }
+    const item = current.checklist.find((entry) => entry.id === itemId);
+    if (!item || item.text === text) {
+      return current;
+    }
+    return this.updateChecklist(cardId, (checklist) =>
+      checklist.map((entry) => (entry.id === itemId ? { ...entry, text } : entry)),
+    );
+  }
+
+  toggleChecklistItem(cardId: string, itemId: string, done?: boolean): Card | null {
+    const current = this.getCard(cardId);
+    const item = current?.checklist.find((entry) => entry.id === itemId);
+    if (!current || !item) {
+      return current ?? null;
+    }
+    const nextDone = done ?? !item.done;
+    if (item.done === nextDone) {
+      return current;
+    }
+    return this.updateChecklist(cardId, (checklist) =>
+      checklist.map((entry) => (entry.id === itemId ? { ...entry, done: nextDone } : entry)),
+    );
+  }
+
+  addChecklistItem(cardId: string, text = ''): ChecklistItem | null {
+    const current = this.getCard(cardId);
+    if (!current) {
+      return null;
+    }
+    const item: ChecklistItem = {
+      id: createChecklistItemId(cardId, current.checklist),
+      text,
+      done: false,
+    };
+    const next = this.updateChecklist(cardId, (checklist) => [...checklist, item]);
+    return next ? item : null;
+  }
+
+  removeChecklistItem(cardId: string, itemId: string): Card | null {
+    const current = this.getCard(cardId);
+    if (!current || !current.checklist.some((entry) => entry.id === itemId)) {
+      return current ?? null;
+    }
+    return this.updateChecklist(cardId, (checklist) =>
+      checklist.filter((entry) => entry.id !== itemId),
+    );
+  }
+
   updateCard(id: string, patch: Partial<Omit<Card, 'id'>>): Card | null {
     const index = this.cards.findIndex((card) => card.id === id);
     const current = this.cards[index];
@@ -132,6 +209,17 @@ export class BoardStore {
       this.emit({ type: 'selection', selectedId: null });
     }
     this.emit({ type: 'cards', cards: this.cards });
+  }
+
+  private updateChecklist(
+    cardId: string,
+    transform: (checklist: readonly ChecklistItem[]) => ChecklistItem[],
+  ): Card | null {
+    const current = this.getCard(cardId);
+    if (!current) {
+      return null;
+    }
+    return this.updateCard(cardId, { checklist: transform(current.checklist) });
   }
 
   private emit(event: StoreEvent): void {

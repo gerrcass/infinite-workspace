@@ -1,6 +1,6 @@
 import type { WorldBounds } from '../camera/camera';
 import { CARD_WIDTHS, type Card } from '../store/types';
-import { createCardView, type CardView } from '../ui/card-view';
+import { createCardView, type CardView, type CardViewHandlers } from '../ui/card-view';
 
 export interface CardLayerEntry {
   readonly card: Card;
@@ -13,6 +13,7 @@ interface StoredView {
 }
 
 export interface CardLayerOptions {
+  readonly cardHandlers: CardViewHandlers;
   readonly onCardResize?: () => void;
   readonly decorate?: (element: HTMLElement) => void;
 }
@@ -28,7 +29,7 @@ export class CardLayer {
 
   constructor(
     private readonly parent: HTMLElement,
-    private readonly options: CardLayerOptions = {},
+    private readonly options: CardLayerOptions,
   ) {
     this.resizeObserver =
       typeof ResizeObserver === 'undefined'
@@ -137,7 +138,7 @@ export class CardLayer {
   }
 
   private create(card: Card): void {
-    const view = createCardView(card);
+    const view = createCardView(card, this.options.cardHandlers);
     this.options.decorate?.(view.element);
     this.views.set(card.id, { card, view });
     this.parent.append(view.element);

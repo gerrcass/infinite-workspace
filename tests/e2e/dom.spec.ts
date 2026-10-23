@@ -10,6 +10,7 @@ import {
   expectNoOverlappingCards,
   findEmptyPoint,
   rendererBadge,
+  runEditableCardsJourney,
   viewportHasNoScrollbars,
   watchConsole,
   zoomLevel,
@@ -74,6 +75,11 @@ test('loads the seeded wall in DOM mode with complete chrome', async ({ page }) 
   await expectNoOverlappingCards(page);
 
   expect(consoleProblems.messages).toEqual([]);
+});
+
+test('edits live card text, checklists, and assists low-zoom editing', async ({ page }) => {
+  const consoleProblems = watchConsole(page);
+  await runEditableCardsJourney(page, 'DOM', consoleProblems);
 });
 
 test('pans, zooms, fits, and selects without remounting cards', async ({ page }) => {

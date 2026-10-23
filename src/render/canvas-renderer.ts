@@ -67,6 +67,7 @@ export class CanvasRenderer implements Renderer {
 
     this.canvas.onpaint = this.handlePaint;
     this.layer = new CardLayer(this.canvas, {
+      cardHandlers: this.options.cardHandlers,
       onCardResize: () => this.schedulePaint(),
       decorate: (element) => {
         element.setAttribute('drawable', '');
@@ -120,6 +121,10 @@ export class CanvasRenderer implements Renderer {
   setSelection(selectedId: string | null): void {
     this.layer.setSelection(selectedId);
     this.schedulePaint();
+  }
+
+  getCardElement(id: string): HTMLElement | null {
+    return this.layer.getElement(id) ?? null;
   }
 
   getWorldBounds(): WorldBounds | null {

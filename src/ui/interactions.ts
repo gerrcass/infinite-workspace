@@ -11,6 +11,8 @@ export interface InteractionHandlers {
   readonly onResetZoom: () => void;
   readonly onFit: () => void;
   readonly onHelp: () => void;
+  readonly onEditableFocus: (cardId: string) => void;
+  readonly onEditableBlur: () => void;
 }
 
 interface PanSession {
@@ -21,16 +23,23 @@ interface PanSession {
 
 const WHEEL_ZOOM_SPEED = 0.0022;
 
+function isTextInput(target: HTMLElement): boolean {
+  if (target instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  if (target instanceof HTMLInputElement) {
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'color', 'range'].includes(
+      target.type,
+    );
+  }
+  return false;
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-  return (
-    target.isContentEditable ||
-    target.matches(
-      'input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]',
-    )
-  );
+  return target.isContentEditable || isTextInput(target);
 }
 
 function normalizeWheelDelta(value: number, mode: number, viewport: ViewportSize): number {
@@ -126,6 +135,23 @@ export function attachInteractions(
     handlers.onSelect(card?.dataset.cardId ?? null);
   };
 
+  const onFocusIn = (event: FocusEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || !isEditableTarget(target)) {
+      return;
+    }
+    const card = target.closest<HTMLElement>('[data-card-id]');
+    if (card?.dataset.cardId) {
+      handlers.onEditableFocus(card.dataset.cardId);
+    }
+  };
+
+  const onFocusOut = (event: FocusEvent): void => {
+    if (event.target instanceof HTMLElement && isEditableTarget(event.target)) {
+      handlers.onEditableBlur();
+    }
+  };
+
   const onWheel = (event: WheelEvent): void => {
     if (event.target instanceof Element && event.target.closest('.chrome')) {
       return;
@@ -152,7 +178,19 @@ export function attachInteractions(
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (isEditableTarget(event.target) || event.defaultPrevented) {
+    if (event.defaultPrevented) {
+      return;
+    }
+    if (
+      event.key === 'Escape' &&
+      event.target instanceof HTMLElement &&
+      isEditableTarget(event.target)
+    ) {
+      event.preventDefault();
+      event.target.blur();
+      return;
+    }
+    if (isEditableTarget(event.target)) {
       return;
     }
     if (document.querySelector('dialog[open]')) {
@@ -200,6 +238,8 @@ export function attachInteractions(
   surface.addEventListener('pointerup', endPan);
   surface.addEventListener('pointercancel', endPan);
   surface.addEventListener('click', onClick);
+  surface.addEventListener('focusin', onFocusIn);
+  surface.addEventListener('focusout', onFocusOut);
   surface.addEventListener('wheel', onWheel, { passive: false });
   window.addEventListener('keydown', onKeyDown);
 
@@ -209,6 +249,8 @@ export function attachInteractions(
     surface.removeEventListener('pointerup', endPan);
     surface.removeEventListener('pointercancel', endPan);
     surface.removeEventListener('click', onClick);
+    surface.removeEventListener('focusin', onFocusIn);
+    surface.removeEventListener('focusout', onFocusOut);
     surface.removeEventListener('wheel', onWheel);
     window.removeEventListener('keydown', onKeyDown);
     surface.classList.remove('is-panning');

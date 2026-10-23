@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EDIT_ASSIST_ZOOM,
   MAX_ZOOM,
   MIN_ZOOM,
+  cameraCenteredOn,
   clampZoom,
+  editingAssistCamera,
   fitBounds,
   initialCamera,
   panBy,
@@ -116,6 +119,31 @@ describe('camera', () => {
       maxX: 2380,
       maxY: 2050,
     });
+  });
+
+  it('centres a world point at an exact zoom', () => {
+    const point = { x: 1234, y: -567 };
+    const camera = cameraCenteredOn(point, viewport, 0.5);
+    const screen = worldToScreen(camera, point);
+    expect(camera.zoom).toBe(0.5);
+    expect(screen.x).toBeCloseTo(viewport.width / 2, 8);
+    expect(screen.y).toBeCloseTo(viewport.height / 2, 8);
+  });
+
+  it('assists editing only below the comfort threshold and centres the card', () => {
+    const point = { x: -800, y: 640 };
+    const close = editingAssistCamera({ x: 0, y: 0, zoom: 0.72 }, viewport, point);
+    expect(close).toBeNull();
+
+    const assisted = editingAssistCamera({ x: 0, y: 0, zoom: 0.3 }, viewport, point);
+    expect(assisted).not.toBeNull();
+    if (!assisted) {
+      return;
+    }
+    expect(assisted.zoom).toBe(EDIT_ASSIST_ZOOM);
+    const screen = worldToScreen(assisted, point);
+    expect(screen.x).toBeCloseTo(viewport.width / 2, 8);
+    expect(screen.y).toBeCloseTo(viewport.height / 2, 8);
   });
 
   it('opens on a readable slice rather than the whole board', () => {

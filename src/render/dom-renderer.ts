@@ -18,7 +18,9 @@ export class DomRenderer implements Renderer {
     this.world = document.createElement('div');
     this.world.className = 'board-world';
     this.world.dataset.renderer = 'dom';
-    this.layer = new CardLayer(this.world);
+    this.layer = new CardLayer(this.world, {
+      cardHandlers: this.options.cardHandlers,
+    });
   }
 
   mount(state: RendererMountState): void {
@@ -43,6 +45,10 @@ export class DomRenderer implements Renderer {
 
   setSelection(selectedId: string | null): void {
     this.layer.setSelection(selectedId);
+  }
+
+  getCardElement(id: string): HTMLElement | null {
+    return this.layer.getElement(id) ?? null;
   }
 
   getWorldBounds(): WorldBounds | null {

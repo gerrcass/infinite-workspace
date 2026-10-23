@@ -1,5 +1,6 @@
 import type { Camera, WorldBounds } from '../camera/camera';
 import type { Card } from '../store/types';
+import type { CardViewHandlers } from '../ui/card-view';
 import type { RenderMode } from './mode';
 
 export interface RendererMountState {
@@ -11,6 +12,8 @@ export interface RendererMountState {
 export interface RendererOptions {
   /** Renderer-owned mount point inside the board surface. */
   readonly container: HTMLElement;
+  /** Store-backed editing callbacks shared by both renderers. */
+  readonly cardHandlers: CardViewHandlers;
   /** Called once when the primary path can no longer draw. */
   readonly onRuntimeError?: (error: unknown) => void;
 }
@@ -26,6 +29,7 @@ export interface Renderer {
   syncCards(cards: readonly Card[], selectedId: string | null): void;
   syncCard(card: Card): void;
   setSelection(selectedId: string | null): void;
+  getCardElement(id: string): HTMLElement | null;
   getWorldBounds(): WorldBounds | null;
   invalidate(): void;
   destroy(): void;

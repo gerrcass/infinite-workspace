@@ -7,6 +7,7 @@ import {
   currentZoom,
   expectBoardReady,
   findEmptyPoint,
+  runEditableCardsJourney,
   viewportHasNoScrollbars,
   watchConsole,
 } from './helpers';
@@ -105,6 +106,11 @@ test('paints live cards into canvas and hit-tests them at camera coordinates', a
 
   await viewportHasNoScrollbars(page);
   expect(consoleProblems.messages).toEqual([]);
+});
+
+test('edits live card text and checklists through canvas hit-testing', async ({ page }) => {
+  const consoleProblems = watchConsole(page);
+  await runEditableCardsJourney(page, 'Canvas', consoleProblems);
 });
 
 test('honours an explicit DOM request even when canvas is available', async ({ page }) => {
