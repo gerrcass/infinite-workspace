@@ -5,6 +5,7 @@ import {
   cardCount,
   cards,
   currentZoom,
+  expectAllCardsInViewport,
   expectBoardReady,
   expectNoOverlappingCards,
   findEmptyPoint,
@@ -135,6 +136,7 @@ test('pans, zooms, fits, and selects without remounting cards', async ({ page })
 
   await page.getByRole('button', { name: 'Fit the whole board in the view' }).click();
   await expect.poll(() => currentZoom(page)).toBeLessThan(initialZoom);
+  await expectAllCardsInViewport(page);
   await page.getByRole('button', { name: /Reset to 100 percent/i }).click();
   await expect.poll(() => currentZoom(page)).toBe(100);
 

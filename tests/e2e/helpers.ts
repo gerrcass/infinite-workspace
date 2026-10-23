@@ -151,3 +151,23 @@ export async function expectNoOverlappingCards(page: Page): Promise<void> {
 
   expect(overlaps).toEqual([]);
 }
+
+/** Fit should leave every card inside the viewport, not just zoom out. */
+export async function expectAllCardsInViewport(page: Page): Promise<void> {
+  const outside = await page.evaluate(() => {
+    return [...document.querySelectorAll<HTMLElement>('.card')]
+      .filter((node) => {
+        const rect = node.getBoundingClientRect();
+        return (
+          rect.right < 0 ||
+          rect.bottom < 0 ||
+          rect.left > window.innerWidth ||
+          rect.top > window.innerHeight
+        );
+      })
+      .map((node) => node.dataset.cardId ?? 'unknown')
+      .slice(0, 8);
+  });
+
+  expect(outside).toEqual([]);
+}
